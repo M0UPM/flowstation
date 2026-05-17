@@ -194,11 +194,11 @@ impl BrewEntity {
     fn process_events(&mut self, queue: &mut MessageQueue) {
         while let Ok(event) = self.event_receiver.try_recv() {
             match event {
-                BrewEvent::Connected => {
-                    tracing::debug!("BrewEntity: connected to TetraPack server");
+                BrewEvent::Connected { server_version } => {
+                    tracing::debug!("BrewEntity: connected to TetraPack server (Brew v{})", server_version);
                     self.connected = true;
                     self.resync_subscribers();
-                    self.set_network_connected(true);
+                    self.set_network_connected(true, server_version);
                     // Notify MM that Brew reconnected so it can send D-LOCATION-UPDATE-COMMAND
                     // to all locally registered MS. Without this, MS units that were registered
                     // before the disconnect believe they are still affiliated and do not
@@ -212,7 +212,7 @@ impl BrewEntity {
                 }
                 BrewEvent::Disconnected(reason) => {
                     tracing::warn!("BrewEntity: Brew backhaul disconnected: {} — releasing all active calls", reason);
-                    self.set_network_connected(false);
+                    self.set_network_connected(false, 0);
                     // ETSI EN 300 392-2 §14.9.4: BS must release all circuits immediately
                     // when backhaul connection is lost. MS will receive D-RELEASE.
                     self.release_all_calls(queue);
@@ -537,7 +537,7 @@ impl BrewEntity {
         }
     }
 
-    fn set_network_connected(&mut self, connected: bool) {
+    fn set_network_connected(&mut self, connected: bool, server_version: u8) {
         self.connected = connected;
         let changed = {
             let mut state = self.config.state_write();
@@ -549,7 +549,7 @@ impl BrewEntity {
         };
         if changed {
             if let Some(ref sink) = self.telemetry_sink {
-                let _ = sink.send(TelemetryEvent::BrewConnected { connected });
+                let _ = sink.send(TelemetryEvent::BrewConnected { connected, server_version });
             }
         }
     }
@@ -1152,6 +1152,7 @@ impl BrewEntity {
             timeout: call.timeout,
             ownership: call.ownership,
             queued: call.queued,
+            mnemonic: None,
         }
     }
 

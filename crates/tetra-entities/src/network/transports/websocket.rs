@@ -229,6 +229,8 @@ pub struct WebSocketTransport {
     last_ping_sent_at: Option<Instant>,
     last_ping_id: Option<u64>,
     ping_seq: u64,
+    /// Brew protocol version reported by server in last HTTP connect response (0 = v0/unknown)
+    server_brew_version: u8,
 }
 
 impl WebSocketTransport {
@@ -242,6 +244,7 @@ impl WebSocketTransport {
             last_ping_sent_at: None,
             last_ping_id: None,
             ping_seq: 0,
+            server_brew_version: 0,
         }
     }
 
@@ -259,6 +262,7 @@ impl WebSocketTransport {
             "GET {} HTTP/1.1\r\n\
              Host: {}\r\n\
              User-Agent: {}\r\n\
+             X-Brew-Version: 1\r\n\
              \r\n",
             endpoint_path, host, self.config.user_agent
         );
@@ -337,6 +341,7 @@ impl WebSocketTransport {
                 "GET {} HTTP/1.1\r\n\
                  Host: {}\r\n\
                  User-Agent: {}\r\n\
+                 X-Brew-Version: 1\r\n\
                  Authorization: {}\r\n\
                  \r\n",
                 endpoint_path, host, self.config.user_agent, auth_header
@@ -452,8 +457,17 @@ impl NetworkTransport for WebSocketTransport {
             None
         };
 
-        let (ws, _response) = tungstenite::client_tls_with_config(request, tcp, None, connector)
+        let (ws, response) = tungstenite::client_tls_with_config(request, tcp, None, connector)
             .map_err(|e| NetworkError::ConnectionFailed(format!("WebSocket connect failed: {}", e)))?;
+
+        // Read Brew server version from response headers (Brew v1 advertises X-Brew-Version: 1)
+        self.server_brew_version = response
+            .headers()
+            .get("X-Brew-Version")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u8>().ok())
+            .unwrap_or(0);
+        tracing::info!("WebSocketTransport: connected, server Brew version={}", self.server_brew_version);
 
         tracing::debug!("WebSocketTransport: WebSocket connected");
 
@@ -629,5 +643,9 @@ impl NetworkTransport for WebSocketTransport {
 
     fn is_connected(&self) -> bool {
         self.ws.is_some()
+    }
+
+    fn server_brew_version(&self) -> u8 {
+        self.server_brew_version
     }
 }

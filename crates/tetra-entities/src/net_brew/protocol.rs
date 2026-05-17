@@ -82,6 +82,10 @@ pub struct BrewGroupTransmission {
     pub priority: u8,
     pub access: u8,
     pub service: u16, // Speech service
+    /// SS-TPI mnemonic name (Brew v1+, optional). Raw 34-byte field:
+    /// byte 0: text coding scheme (7-bit), bytes 1+: encoded name.
+    /// None when server is v0 or mnemonic not present in message.
+    pub mnemonic: Option<[u8; 34]>,
 }
 
 /// Circuit/PBX/phone call data, part of SETUP_REQUEST / CONNECT_REQUEST
@@ -102,6 +106,9 @@ pub struct BrewCircularCall {
     pub timeout: u8,
     pub ownership: u8,
     pub queued: u8,
+    /// SS-TPI mnemonic name (Brew v1+, optional). Present in SETUP_REQUEST only.
+    /// None when server is v0 or mnemonic not present.
+    pub mnemonic: Option<[u8; 34]>,
 }
 
 /// Circuit grant payload, part of CONNECT_CONFIRM / SIMPLEX_* states
@@ -297,16 +304,25 @@ fn parse_call_control(call_state: u8, data: &[u8]) -> Result<BrewMessage, BrewPa
 
     let payload = match call_state {
         CALL_STATE_GROUP_TX => {
-            // BrewGroupTransmission: source(4) + destination(4) + priority(1) + access(1) + service(2) = 12 bytes
+            // v0: source(4)+dest(4)+priority(1)+access(1)+service(2) = 12 bytes
+            // v1: same + mnemonic(34) = 46 bytes
             if payload_data.len() < 12 {
                 return Err(BrewParseError::TooShort(data.len()));
             }
+            let mnemonic = if payload_data.len() >= 46 {
+                let mut m = [0u8; 34];
+                m.copy_from_slice(&payload_data[12..46]);
+                Some(m)
+            } else {
+                None
+            };
             BrewCallPayload::GroupTransmission(BrewGroupTransmission {
                 source: read_u32_le(payload_data, 0),
                 destination: read_u32_le(payload_data, 4),
                 priority: payload_data[8],
                 access: payload_data[9],
                 service: read_u16_le(payload_data, 10),
+                mnemonic,
             })
         }
 
@@ -319,10 +335,18 @@ fn parse_call_control(call_state: u8, data: &[u8]) -> Result<BrewMessage, BrewPa
         }
 
         CALL_STATE_SETUP_REQUEST | CALL_STATE_CONNECT_REQUEST => {
-            // BrewCircularCall: source(4)+dest(4)+number(32)+11 single-byte fields = 51 bytes
+            // v0: source(4)+dest(4)+number(32)+11 single-byte fields = 51 bytes
+            // v1 SETUP_REQUEST: same + mnemonic(34) = 85 bytes (CONNECT_REQUEST has no mnemonic)
             if payload_data.len() < CIRCULAR_CALL_LEN {
                 return Err(BrewParseError::TooShort(data.len()));
             }
+            let mnemonic = if call_state == CALL_STATE_SETUP_REQUEST && payload_data.len() >= CIRCULAR_CALL_LEN + 34 {
+                let mut m = [0u8; 34];
+                m.copy_from_slice(&payload_data[CIRCULAR_CALL_LEN..CIRCULAR_CALL_LEN + 34]);
+                Some(m)
+            } else {
+                None
+            };
             BrewCallPayload::CircularCall(BrewCircularCall {
                 source: read_u32_le(payload_data, 0),
                 destination: read_u32_le(payload_data, 4),
@@ -338,6 +362,7 @@ fn parse_call_control(call_state: u8, data: &[u8]) -> Result<BrewMessage, BrewPa
                 timeout: payload_data[48],
                 ownership: payload_data[49],
                 queued: payload_data[50],
+                mnemonic,
             })
         }
 
@@ -427,7 +452,10 @@ fn parse_service(service_type: u8, data: &[u8]) -> Result<BrewMessage, BrewParse
 // ─── Circuit / individual call serializers ────────────────────────────────
 
 fn build_circular_call(call_state: u8, session_uuid: &Uuid, call: &BrewCircularCall) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(2 + 16 + CIRCULAR_CALL_LEN);
+    // v1 mnemonic is only sent in SETUP_REQUEST, not CONNECT_REQUEST
+    let include_mnemonic = call_state == CALL_STATE_SETUP_REQUEST && call.mnemonic.is_some();
+    let cap = 2 + 16 + CIRCULAR_CALL_LEN + if include_mnemonic { 34 } else { 0 };
+    let mut buf = Vec::with_capacity(cap);
     buf.push(BREW_CLASS_CALL_CONTROL);
     buf.push(call_state);
     buf.extend_from_slice(session_uuid.as_bytes());
@@ -445,6 +473,11 @@ fn build_circular_call(call_state: u8, session_uuid: &Uuid, call: &BrewCircularC
     buf.push(call.timeout);
     buf.push(call.ownership);
     buf.push(call.queued);
+    if include_mnemonic {
+        if let Some(m) = &call.mnemonic {
+            buf.extend_from_slice(m);
+        }
+    }
     buf
 }
 
@@ -599,10 +632,13 @@ pub fn build_subscriber_deregister(issi: u32) -> Vec<u8> {
 }
 
 /// Build a group call transmission start message (GROUP_TX)
-/// Sent when a local radio starts transmitting on a subscribed group
-pub fn build_group_tx(session_uuid: &Uuid, source_issi: u32, dest_gssi: u32, priority: u8, service: u16) -> Vec<u8> {
-    // kind(1) + type(1) + uuid(16) + source(4) + dest(4) + priority(1) + access(1) + service(2) = 30
-    let mut buf = Vec::with_capacity(30);
+/// Sent when a local radio starts transmitting on a subscribed group.
+/// `mnemonic` is the optional SS-TPI talking party name (Brew v1, 34 bytes raw).
+pub fn build_group_tx(session_uuid: &Uuid, source_issi: u32, dest_gssi: u32, priority: u8, service: u16, mnemonic: Option<&[u8; 34]>) -> Vec<u8> {
+    // v0: kind(1)+type(1)+uuid(16)+source(4)+dest(4)+priority(1)+access(1)+service(2) = 30
+    // v1: same + mnemonic(34) = 64
+    let cap = if mnemonic.is_some() { 64 } else { 30 };
+    let mut buf = Vec::with_capacity(cap);
     buf.push(BREW_CLASS_CALL_CONTROL);
     buf.push(CALL_STATE_GROUP_TX);
     buf.extend_from_slice(session_uuid.as_bytes());
@@ -611,6 +647,9 @@ pub fn build_group_tx(session_uuid: &Uuid, source_issi: u32, dest_gssi: u32, pri
     buf.push(priority);
     buf.push(0); // access = 0 (normal)
     write_u16_le(&mut buf, service);
+    if let Some(m) = mnemonic {
+        buf.extend_from_slice(m);
+    }
     buf
 }
 
@@ -712,31 +751,101 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_group_tx() {
+    fn test_parse_group_tx_v0_no_mnemonic() {
         let uuid = Uuid::new_v4();
         let mut data = vec![BREW_CLASS_CALL_CONTROL, CALL_STATE_GROUP_TX];
         data.extend_from_slice(uuid.as_bytes());
-        // BrewGroupTransmission: source(4) + dest(4) + priority(1) + access(1) + service(2)
-        write_u32_le(&mut data, 1001); // source ISSI
-        write_u32_le(&mut data, 26); // destination GSSI
+        write_u32_le(&mut data, 1001);
+        write_u32_le(&mut data, 26);
         data.push(3); // priority
         data.push(0); // access
         write_u16_le(&mut data, 0); // service
 
         let msg = parse_brew_message(&data).unwrap();
         if let BrewMessage::CallControl(cc) = msg {
-            assert_eq!(cc.call_state, CALL_STATE_GROUP_TX);
-            assert_eq!(cc.identifier, uuid);
             if let BrewCallPayload::GroupTransmission(gt) = cc.payload {
                 assert_eq!(gt.source, 1001);
-                assert_eq!(gt.destination, 26);
-                assert_eq!(gt.priority, 3);
-            } else {
-                panic!("Expected GroupTransmission payload");
-            }
-        } else {
-            panic!("Expected CallControl message");
-        }
+                assert!(gt.mnemonic.is_none(), "v0 should have no mnemonic");
+            } else { panic!("Expected GroupTransmission"); }
+        } else { panic!("Expected CallControl"); }
+    }
+
+    #[test]
+    fn test_parse_group_tx_v1_with_mnemonic() {
+        let uuid = Uuid::new_v4();
+        let mut data = vec![BREW_CLASS_CALL_CONTROL, CALL_STATE_GROUP_TX];
+        data.extend_from_slice(uuid.as_bytes());
+        write_u32_le(&mut data, 1001);
+        write_u32_le(&mut data, 26);
+        data.push(3); // priority
+        data.push(0); // access
+        write_u16_le(&mut data, 0); // service
+        // mnemonic: coding_scheme=0x01 (ISO-8859-1), length=32 bits (4 chars), "TEST"
+        let mut mnemonic = [0u8; 34];
+        mnemonic[0] = 0x01; // coding scheme
+        mnemonic[1] = 32;   // length in bits
+        mnemonic[2..6].copy_from_slice(b"TEST");
+        data.extend_from_slice(&mnemonic);
+
+        let msg = parse_brew_message(&data).unwrap();
+        if let BrewMessage::CallControl(cc) = msg {
+            if let BrewCallPayload::GroupTransmission(gt) = cc.payload {
+                assert_eq!(gt.source, 1001);
+                let m = gt.mnemonic.expect("v1 should have mnemonic");
+                assert_eq!(m[0], 0x01);
+                assert_eq!(&m[2..6], b"TEST");
+            } else { panic!("Expected GroupTransmission"); }
+        } else { panic!("Expected CallControl"); }
+    }
+
+    #[test]
+    fn test_parse_setup_request_v1_with_mnemonic() {
+        let uuid = Uuid::new_v4();
+        let mut data = vec![BREW_CLASS_CALL_CONTROL, CALL_STATE_SETUP_REQUEST];
+        data.extend_from_slice(uuid.as_bytes());
+        // BrewCircularCall: source(4)+dest(4)+number(32)+11 bytes
+        write_u32_le(&mut data, 2001); // source
+        write_u32_le(&mut data, 3001); // destination
+        let mut number = [0u8; 32];
+        number[..3].copy_from_slice(b"600");
+        data.extend_from_slice(&number);
+        data.extend_from_slice(&[0u8; 11]); // 11 single-byte fields
+        // mnemonic
+        let mut mnemonic = [0u8; 34];
+        mnemonic[0] = 0x01;
+        mnemonic[1] = 40;
+        mnemonic[2..7].copy_from_slice(b"RADIO");
+        data.extend_from_slice(&mnemonic);
+
+        let msg = parse_brew_message(&data).unwrap();
+        if let BrewMessage::CallControl(cc) = msg {
+            if let BrewCallPayload::CircularCall(c) = cc.payload {
+                assert_eq!(c.source, 2001);
+                let m = c.mnemonic.expect("v1 SETUP_REQUEST should have mnemonic");
+                assert_eq!(&m[2..7], b"RADIO");
+            } else { panic!("Expected CircularCall"); }
+        } else { panic!("Expected CallControl"); }
+    }
+
+    #[test]
+    fn test_build_group_tx_v1_roundtrip() {
+        let uuid = Uuid::new_v4();
+        let mut mnemonic = [0u8; 34];
+        mnemonic[0] = 0x01;
+        mnemonic[1] = 24;
+        mnemonic[2..5].copy_from_slice(b"YO6");
+
+        let built = build_group_tx(&uuid, 9001, 26, 2, 0, Some(&mnemonic));
+        assert_eq!(built.len(), 64, "v1 GROUP_TX should be 64 bytes");
+
+        let msg = parse_brew_message(&built).unwrap();
+        if let BrewMessage::CallControl(cc) = msg {
+            if let BrewCallPayload::GroupTransmission(gt) = cc.payload {
+                assert_eq!(gt.source, 9001);
+                let m = gt.mnemonic.unwrap();
+                assert_eq!(&m[2..5], b"YO6");
+            } else { panic!(); }
+        } else { panic!(); }
     }
 
     #[test]

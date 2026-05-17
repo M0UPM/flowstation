@@ -24,6 +24,7 @@ pub struct CallState {
     pub active_speaker: Option<u32>,
     pub started_secs_ago: u64,
     pub simplex: bool,
+    pub ts: u8,
 }
 
 /// Log entry
@@ -52,6 +53,7 @@ pub struct DashboardStateInner {
     pub last_heard: std::collections::VecDeque<LastHeardEntry>,
     pub config_path: String,
     pub brew_online: bool,
+    pub brew_version: u8,
 }
 
 pub const LAST_HEARD_MAX: usize = 50;
@@ -76,6 +78,7 @@ pub struct CallEntry {
     pub speaker_issi: Option<u32>,
     pub started_at: Instant,
     pub simplex: bool,
+    pub ts: u8,
 }
 
 pub type DashboardState = Arc<RwLock<DashboardStateInner>>;
@@ -89,6 +92,7 @@ impl DashboardStateInner {
             last_heard: std::collections::VecDeque::with_capacity(LAST_HEARD_MAX + 1),
             config_path,
             brew_online: false,
+            brew_version: 0,
         }
     }
 
@@ -142,6 +146,7 @@ impl DashboardStateInner {
             active_speaker: c.speaker_issi,
             started_secs_ago: c.started_at.elapsed().as_secs(),
             simplex: c.simplex,
+            ts: c.ts,
         }).collect()
     }
 }

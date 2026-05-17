@@ -773,6 +773,7 @@ impl CcBsSubentity {
             call_id,
             gssi: dest_gssi,
             caller_issi: source_issi,
+            ts,
         });
 
         queue.push_back(SapMsg {

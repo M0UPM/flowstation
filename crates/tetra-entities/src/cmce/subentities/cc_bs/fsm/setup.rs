@@ -55,6 +55,7 @@ impl CcBsSubentity {
             call_id: circuit.call_id,
             gssi: dest_gssi,
             caller_issi: calling_party.ssi,
+            ts: circuit.ts,
         });
 
         // Signal UMAC to open DL+UL circuits.
@@ -348,6 +349,7 @@ impl CcBsSubentity {
             calling_issi: calling_party.ssi,
             called_issi: called_addr.ssi,
             simplex: !pdu.hook_method_selection,
+            ts: calling_ts,
         });
 
         // Do not open traffic channel yet. Let called MS respond on MCCH.

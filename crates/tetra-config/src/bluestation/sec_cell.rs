@@ -164,6 +164,11 @@ pub struct CfgCellInfo {
     /// Broadcasts the configured text to all MSs once per interval as a D-SDS-DATA to GSSI 0xFFFFFF.
     pub home_mode_display: Option<CfgHomeModeDisplay>,
 
+    /// Optional supplemental periodic SDS broadcast with a custom PID.
+    /// Useful for sending status messages (e.g. PID 130) alongside PID 220.
+    /// Configured via `[cell_info.sds_broadcast]`. Uses the same structure as home_mode_display.
+    pub sds_broadcast: Option<CfgHomeModeDisplay>,
+
     /// Neighbor cells to include in D-NWRK-BROADCAST for cell reselection.
     /// Up to 7 entries. MSs use this list to find alternative cells when signal degrades.
     pub neighbor_cells_ca: Vec<CfgNeighborCellCa>,
@@ -191,6 +196,9 @@ pub struct CfgCellInfo {
     /// 0 = disabled — MS registrations never expire.
     /// Default: 3600 (1 hour). Valid range when non-zero: 60–86400.
     pub periodic_registration_secs: u32,
+
+    /// Remote control via SDS U-STATUS to ISSI 9999. None = disabled.
+    pub sds_command_control: Option<CfgSdsCommandControl>,
 }
 
 #[derive(Default, Deserialize)]
@@ -235,6 +243,9 @@ pub struct CellInfoDto {
     /// Home Mode Display periodic SDS broadcast. Enabled by presence of this sub-section.
     pub home_mode_display: Option<HomeModeDisplayDto>,
 
+    /// Supplemental SDS broadcast with custom PID. Enabled by presence of this sub-section.
+    pub sds_broadcast: Option<HomeModeDisplayDto>,
+
     /// Neighbor cells for D-NWRK-BROADCAST. Up to 7 entries.
     /// Parsed separately in parsing.rs from toml::Value to avoid serde flatten conflict.
     #[serde(skip)]
@@ -251,6 +262,9 @@ pub struct CellInfoDto {
 
     /// Periodic registration interval in seconds. 0 = disabled. Default: 3600.
     pub periodic_registration_secs: Option<u32>,
+
+    /// Remote control via SDS U-STATUS. Optional section.
+    pub sds_command_control: Option<SdsCommandControlDto>,
 
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
@@ -298,6 +312,13 @@ pub fn cell_dto_to_cfg(ci: CellInfoDto) -> CfgCellInfo {
             text_coding_scheme: h.text_coding_scheme.unwrap_or(HomeModeDisplaySdsTextCodingScheme::LATIN),
             text: h.text.unwrap_or_default(),
         }),
+        sds_broadcast: ci.sds_broadcast.map(|h| CfgHomeModeDisplay {
+            source_issi: h.source_issi.unwrap_or(0),
+            interval_multiframes: h.interval_multiframes.unwrap_or(96),
+            protocol_id: h.protocol_id.unwrap_or(220),
+            text_coding_scheme: h.text_coding_scheme.unwrap_or(HomeModeDisplaySdsTextCodingScheme::LATIN),
+            text: h.text.unwrap_or_default(),
+        }),
         neighbor_cells_ca: ci.neighbor_cells_ca,
         hangtime_secs: ci.hangtime_secs.unwrap_or(5).clamp(0, 300),
         call_timeout_secs: { let v = ci.call_timeout_secs.unwrap_or(120); if v == 0 { 0 } else { v.clamp(30, 86400) } },
@@ -306,6 +327,13 @@ pub fn cell_dto_to_cfg(ci: CellInfoDto) -> CfgCellInfo {
             let v = ci.periodic_registration_secs.unwrap_or(3600);
             if v == 0 { 0 } else { v.clamp(60, 86400) }
         },
+        sds_command_control: ci.sds_command_control.map(|dto| CfgSdsCommandControl {
+            authorized_issis: dto.authorized_issis,
+            commands: dto.commands.into_iter().map(|e| CfgSdsCommandEntry {
+                status_code: e.status_code,
+                action: e.action,
+            }).collect(),
+        }),
     }
 }
 
@@ -314,4 +342,39 @@ pub fn cell_dto_to_cfg(ci: CellInfoDto) -> CfgCellInfo {
 /// by users if needed.
 fn default_tetrapack_local_ranges() -> SortedDisjointSsiRanges {
     SortedDisjointSsiRanges::from_vec_ssirange(vec![SsiRange::new(0, 90)])
+}
+
+// ── SDS command control ────────────────────────────────────────────────────
+
+/// A single SDS status code → action mapping for remote control via U-STATUS.
+#[derive(Debug, Clone)]
+pub struct CfgSdsCommandEntry {
+    /// Pre-coded status value that triggers this action.
+    pub status_code: u16,
+    /// Action to execute: "restart", "shutdown", or "kick_all".
+    pub action: String,
+}
+
+/// Remote control via SDS U-STATUS PDUs sent to ISSI 9999.
+/// Only ISSIs listed in `authorized_issis` can trigger commands.
+#[derive(Debug, Clone)]
+pub struct CfgSdsCommandControl {
+    pub authorized_issis: Vec<u32>,
+    pub commands: Vec<CfgSdsCommandEntry>,
+}
+
+#[derive(Default, Deserialize)]
+pub struct SdsCommandEntryDto {
+    pub status_code: u16,
+    pub action: String,
+}
+
+#[derive(Default, Deserialize)]
+pub struct SdsCommandControlDto {
+    #[serde(default)]
+    pub authorized_issis: Vec<u32>,
+    #[serde(default)]
+    pub commands: Vec<SdsCommandEntryDto>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }

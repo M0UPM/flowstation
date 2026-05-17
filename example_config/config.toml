@@ -97,6 +97,52 @@ colour_code = 1
 # text = "FlowStation"            # Text shown on radio display
 ###############################################################################
 
+###############################################################################
+# OPTIONAL: Supplemental SDS broadcast (FlowStation)
+#
+# A second periodic SDS broadcast sent alongside the Home Mode Display (PID 220).
+# Uses the same mechanism but with a configurable protocol ID and text.
+# Useful for sending additional data to radios that support custom PIDs.
+# Enabled by the presence of this sub-section; remove to disable.
+#
+# [cell_info.sds_broadcast]
+# source_issi = 16777215          # ISSI shown as sender on the radio (default: 0)
+# interval_multiframes = 96       # Broadcast interval (1 MF ≈ 1s; default: 96 ≈ 96s)
+# protocol_id = 130               # SDS protocol ID (default: 220 — change to avoid conflict)
+# text_coding_scheme = "LATIN"    # "LATIN" = ISO-8859-1, "UTF16" = UCS-2/UTF-16BE
+# text = "YO6RZV"                 # Text payload to broadcast
+###############################################################################
+
+###############################################################################
+# OPTIONAL: Remote control via U-STATUS (FlowStation)
+#
+# Allows authorized radios to trigger BS actions remotely by sending a U-STATUS
+# message to ISSI 9999 (the BS control address) from the radio menu.
+# Only ISSIs listed in authorized_issis can trigger commands.
+# Unrecognized status codes from authorized radios are silently ignored.
+# Enabled by the presence of this sub-section; remove to disable.
+#
+# Available actions:
+#   "restart"   — restarts the FlowStation service (equivalent to systemctl restart tetra)
+#   "shutdown"  — stops the FlowStation service (must be restarted manually or via systemd)
+#   "kick_all"  — deregisters all currently registered terminals; they re-attach immediately
+#
+# [cell_info.sds_command_control]
+# authorized_issis = [2260570, 2260571]   # ISSIs allowed to send commands
+#
+# [[cell_info.sds_command_control.commands]]
+# status_code = 32001             # U-STATUS code sent from the radio to ISSI 9999
+# action = "restart"
+#
+# [[cell_info.sds_command_control.commands]]
+# status_code = 32002
+# action = "shutdown"
+#
+# [[cell_info.sds_command_control.commands]]
+# status_code = 32003
+# action = "kick_all"
+###############################################################################
+
 # Local SSI ranges for this cell. Traffic for these ranges will not leave the cell.
 # Overrides any settings in the brew section, if enabled.
 # Incoming brew traffic on these ranges will also be rejected.

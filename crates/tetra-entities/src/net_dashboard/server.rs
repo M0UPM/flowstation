@@ -171,16 +171,20 @@ pub struct DashboardServer {
     config_path: String,
     cmd_tx: Option<CmdSender>,
     update_state: SharedUpdateState,
+    /// Last time a ts_voice WS message was broadcast per TS (indexed 0..3 for TS1..TS4)
+    ts_last_broadcast: std::sync::Mutex<[std::time::Instant; 4]>,
 }
 
 impl DashboardServer {
     pub fn new(config_path: String) -> Self {
+        let now = std::time::Instant::now();
         Self {
             state: Arc::new(RwLock::new(DashboardStateInner::new(config_path.clone()))),
             clients: Arc::new(Mutex::new(Vec::new())),
             config_path,
             cmd_tx: None,
             update_state: Arc::new(Mutex::new(UpdateState::new())),
+            ts_last_broadcast: std::sync::Mutex::new([now; 4]),
         }
     }
 
@@ -263,11 +267,11 @@ impl DashboardServer {
                         e.energy_saving_mode = *mode;
                     }
                 }
-                TelemetryEvent::GroupCallStarted { call_id, gssi, caller_issi } => {
+                TelemetryEvent::GroupCallStarted { call_id, gssi, caller_issi, ts } => {
                     s.calls.insert(*call_id, CallEntry {
                         call_id: *call_id, is_group: true, gssi: *gssi,
                         caller_issi: *caller_issi, called_issi: 0,
-                        speaker_issi: Some(*caller_issi), started_at: Instant::now(), simplex: false,
+                        speaker_issi: Some(*caller_issi), started_at: Instant::now(), simplex: false, ts: *ts,
                     });
                     s.push_last_heard(*caller_issi, "call_group", *gssi);
                     s.push_log("INFO", format!("Group call {} started: {} -> GSSI {}", call_id, caller_issi, gssi));
@@ -280,11 +284,11 @@ impl DashboardServer {
                     if let Some(c) = s.calls.get_mut(call_id) { c.speaker_issi = Some(*speaker_issi); }
                     s.push_last_heard(*speaker_issi, "call_group", *gssi);
                 }
-                TelemetryEvent::IndividualCallStarted { call_id, calling_issi, called_issi, simplex } => {
+                TelemetryEvent::IndividualCallStarted { call_id, calling_issi, called_issi, simplex, ts } => {
                     s.calls.insert(*call_id, CallEntry {
                         call_id: *call_id, is_group: false, gssi: 0,
                         caller_issi: *calling_issi, called_issi: *called_issi,
-                        speaker_issi: None, started_at: Instant::now(), simplex: *simplex,
+                        speaker_issi: None, started_at: Instant::now(), simplex: *simplex, ts: *ts,
                     });
                     s.push_last_heard(*calling_issi, "call_individual", *called_issi);
                     s.push_log("INFO", format!("P2P call {} started: {} -> {}", call_id, calling_issi, called_issi));
@@ -293,16 +297,34 @@ impl DashboardServer {
                     s.calls.remove(call_id);
                     s.push_log("INFO", format!("P2P call {} ended", call_id));
                 }
-                TelemetryEvent::BrewConnected { connected } => {
+                TelemetryEvent::BrewConnected { connected, server_version } => {
                     s.brew_online = *connected;
+                    if *connected { s.brew_version = *server_version; }
                 }
                 TelemetryEvent::SdsActivity { source_issi, dest_issi } => {
                     s.push_last_heard(*source_issi, "sds", *dest_issi);
+                }
+                TelemetryEvent::TsVoiceActivity { .. } => {
+                    // Handled below with rate limiting — no state update needed
                 }
             }
         }
         if let Some(json) = msg {
             self.broadcast(&json);
+        }
+        // TsVoiceActivity: rate-limit broadcasts to max 4/sec per TS (250ms cooldown)
+        if let TelemetryEvent::TsVoiceActivity { ts } = &event {
+            let idx = (ts.saturating_sub(1) as usize).min(3);
+            let now = std::time::Instant::now();
+            if let Ok(mut arr) = self.ts_last_broadcast.try_lock() {
+                if now.duration_since(arr[idx]) >= std::time::Duration::from_millis(250) {
+                    arr[idx] = now;
+                    drop(arr);
+                    if let Some(json) = event_to_ws_msg(&event) {
+                        self.broadcast(&json);
+                    }
+                }
+            }
         }
     }
 
@@ -343,20 +365,22 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
             serde_json::json!({"type":"ms_rssi","issi":issi,"rssi_dbfs":rssi_dbfs}),
         TelemetryEvent::MsEnergySaving { issi, mode } =>
             serde_json::json!({"type":"ms_energy_saving","issi":issi,"mode":mode}),
-        TelemetryEvent::GroupCallStarted { call_id, gssi, caller_issi } =>
-            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"group","gssi":gssi,"caller_issi":caller_issi,"last_heard":{"issi":caller_issi,"activity":"call_group","dest":gssi}}),
+        TelemetryEvent::GroupCallStarted { call_id, gssi, caller_issi, ts } =>
+            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"group","gssi":gssi,"caller_issi":caller_issi,"ts":ts,"last_heard":{"issi":caller_issi,"activity":"call_group","dest":gssi}}),
         TelemetryEvent::GroupCallEnded { call_id, gssi: _ } =>
             serde_json::json!({"type":"call_ended","call_id":call_id}),
         TelemetryEvent::GroupCallSpeakerChanged { call_id, gssi, speaker_issi } =>
             serde_json::json!({"type":"speaker_changed","call_id":call_id,"speaker_issi":speaker_issi,"last_heard":{"issi":speaker_issi,"activity":"call_group","dest":gssi}}),
-        TelemetryEvent::IndividualCallStarted { call_id, calling_issi, called_issi, simplex } =>
-            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"individual","caller_issi":calling_issi,"called_issi":called_issi,"simplex":simplex,"last_heard":{"issi":calling_issi,"activity":"call_individual","dest":called_issi}}),
+        TelemetryEvent::IndividualCallStarted { call_id, calling_issi, called_issi, simplex, ts } =>
+            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"individual","caller_issi":calling_issi,"called_issi":called_issi,"simplex":simplex,"ts":ts,"last_heard":{"issi":calling_issi,"activity":"call_individual","dest":called_issi}}),
         TelemetryEvent::IndividualCallEnded { call_id } =>
             serde_json::json!({"type":"call_ended","call_id":call_id}),
-        TelemetryEvent::BrewConnected { connected } =>
-            serde_json::json!({"type":"brew_status","connected":connected}),
+        TelemetryEvent::BrewConnected { connected, server_version } =>
+            serde_json::json!({"type":"brew_status","connected":connected,"brew_version":server_version}),
         TelemetryEvent::SdsActivity { source_issi, dest_issi } =>
             serde_json::json!({"type":"last_heard","issi":source_issi,"activity":"sds","dest":dest_issi}),
+        TelemetryEvent::TsVoiceActivity { ts } =>
+            serde_json::json!({"type":"ts_voice","ts":ts}),
     };
     serde_json::to_string(&v).ok()
 }
@@ -378,6 +402,45 @@ fn handle_connection(
 
     if req_line.contains("/ws") {
         handle_ws(stream, state, clients, cmd_tx, update_state);
+    } else if req_line.contains("GET /api/system") {
+        let mut buf = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            let _ = buf.read_line(&mut line);
+            if line == "\r\n" || line.is_empty() || line == "\n" { break; }
+        }
+        serve_system_info(buf.into_inner(), &config_path);
+    } else if req_line.contains("POST /api/configs/activate") {
+        let mut buf = BufReader::new(stream);
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            let _ = buf.read_line(&mut line);
+            if line == "\r\n" || line.is_empty() || line == "\n" { break; }
+            let lower = line.to_lowercase();
+            if lower.starts_with("content-length:") {
+                content_length = lower.trim_start_matches("content-length:").trim()
+                    .trim_end_matches("\r\n").trim_end_matches('\n').parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        let _ = buf.read_exact(&mut body);
+        let profile = String::from_utf8_lossy(&body).trim().to_string();
+        match activate_config_profile(&config_path, &profile) {
+            Ok(_) => {
+                tracing::info!("Dashboard: activated config profile '{}'", profile);
+                http_response(buf.into_inner(), 200, "OK")
+            }
+            Err(e) => http_response(buf.into_inner(), 500, &e),
+        }
+    } else if req_line.contains("GET /api/configs") {
+        let mut buf = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            let _ = buf.read_line(&mut line);
+            if line == "\r\n" || line.is_empty() || line == "\n" { break; }
+        }
+        serve_config_list(buf.into_inner(), &config_path);
     } else if req_line.contains("GET /api/update/status") {
         let mut buf = BufReader::new(stream);
         loop {
@@ -504,9 +567,10 @@ fn handle_ws(stream: TcpStream, state: DashboardState, clients: WsClients,
         let last_heard: Vec<_> = s.last_heard.iter().cloned().collect();
         drop(s);
         let brew_online = state.read().unwrap().brew_online;
+        let brew_version = state.read().unwrap().brew_version;
         if let Ok(json) = serde_json::to_string(&serde_json::json!({
             "type": "snapshot", "ms": ms, "calls": calls, "log": logs,
-            "brew_online": brew_online, "last_heard": last_heard
+            "brew_online": brew_online, "brew_version": brew_version, "last_heard": last_heard
         })) {
             let _ = ws.send(Message::Text(json));
         }
@@ -629,6 +693,107 @@ fn serve_update_status(mut stream: TcpStream, update_state: &SharedUpdateState) 
     );
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(body.as_bytes());
+}
+
+fn serve_system_info(mut stream: TcpStream, config_path: &str) {
+    let hostname = std::process::Command::new("hostname")
+        .output().ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let uptime_secs: u64 = std::fs::read_to_string("/proc/uptime").ok()
+        .and_then(|s| s.split_whitespace().next().map(|n| n.parse::<f64>().ok()))
+        .flatten().map(|f| f as u64).unwrap_or(0);
+
+    let os_info = std::fs::read_to_string("/etc/os-release").ok()
+        .and_then(|s| s.lines()
+            .find(|l| l.starts_with("PRETTY_NAME="))
+            .map(|l| l.trim_start_matches("PRETTY_NAME=").trim_matches('"').to_string()))
+        .unwrap_or_else(|| "Linux".to_string());
+
+    let config_dir = std::path::Path::new(config_path)
+        .parent().map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    let body = format!(
+        "{{\"hostname\":{},\"uptime_secs\":{},\"os\":{},\"config_path\":{},\"config_dir\":{},\"stack_version\":{}}}",
+        serde_json::to_string(&hostname).unwrap_or_default(),
+        uptime_secs,
+        serde_json::to_string(&os_info).unwrap_or_default(),
+        serde_json::to_string(config_path).unwrap_or_default(),
+        serde_json::to_string(&config_dir).unwrap_or_default(),
+        serde_json::to_string(tetra_core::STACK_VERSION).unwrap_or_default(),
+    );
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+}
+
+fn serve_config_list(mut stream: TcpStream, config_path: &str) {
+    let active_name = std::path::Path::new(config_path)
+        .file_name().map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let config_dir = std::path::Path::new(config_path)
+        .parent().unwrap_or(std::path::Path::new("."));
+
+    let mut profiles: Vec<serde_json::Value> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(config_dir) {
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                // Include .toml files, exclude backups (.bak)
+                if name.ends_with(".toml") && !name.ends_with(".bak") { Some(name) } else { None }
+            })
+            .collect();
+        names.sort();
+        for name in names {
+            profiles.push(serde_json::json!({
+                "name": name,
+                "active": name == active_name,
+            }));
+        }
+    }
+
+    let body = serde_json::to_string(&profiles).unwrap_or_else(|_| "[]".to_string());
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+}
+
+/// Copy selected profile over the active config_path, preserving a backup.
+fn activate_config_profile(config_path: &str, profile_name: &str) -> Result<(), String> {
+    // Security: profile_name must be a plain filename with no path separators
+    if profile_name.contains('/') || profile_name.contains('\\') || profile_name.contains("..") {
+        return Err("invalid profile name".to_string());
+    }
+    if !profile_name.ends_with(".toml") {
+        return Err("profile must be a .toml file".to_string());
+    }
+
+    let config_dir = std::path::Path::new(config_path)
+        .parent().unwrap_or(std::path::Path::new("."));
+    let profile_path = config_dir.join(profile_name);
+
+    if !profile_path.exists() {
+        return Err(format!("profile '{}' not found", profile_name));
+    }
+
+    // Backup current config before switching
+    let backup_path = format!("{}.bak", config_path);
+    if let Err(e) = std::fs::copy(config_path, &backup_path) {
+        tracing::warn!("Dashboard: failed to backup config before profile switch: {}", e);
+    }
+
+    std::fs::copy(&profile_path, config_path)
+        .map(|_| ())
+        .map_err(|e| format!("failed to copy profile: {}", e))
 }
 
 fn serve_html(mut stream: TcpStream) {

@@ -21,10 +21,19 @@ use crate::net_control::ControlCommand;
 use crate::net_telemetry::{TelemetryEvent, TelemetrySink};
 
 /// Clause 13 Short Data Service CMCE sub-entity
+/// Actions that sds_bs cannot execute itself (need access to CcBsSubentity or system),
+/// queued during U-STATUS processing and drained by CmceBs::tick_start.
+#[derive(Debug, Clone)]
+pub enum SdsPendingAction {
+    KickAll,
+}
+
 pub struct SdsBsSubentity {
     config: SharedConfig,
     telemetry: Option<TelemetrySink>,
     home_mode_display_sender: HomeModeDisplaySender,
+    sds_broadcast_sender: HomeModeDisplaySender,
+    pub pending_actions: Vec<SdsPendingAction>,
 }
 
 impl SdsBsSubentity {
@@ -33,6 +42,8 @@ impl SdsBsSubentity {
             config,
             telemetry: None,
             home_mode_display_sender: HomeModeDisplaySender::new(),
+            sds_broadcast_sender: HomeModeDisplaySender::new(),
+            pending_actions: Vec::new(),
         }
     }
 
@@ -50,6 +61,9 @@ impl SdsBsSubentity {
     pub fn tick_start(&mut self, queue: &mut MessageQueue, dltime: TdmaTime) {
         if let Some(hmd_tx) = self.home_mode_display_sender.tick_start(&self.config, dltime) {
             self.send_d_sds_data(queue, hmd_tx.source_issi, hmd_tx.dest_gssi, SsiType::Gssi, hmd_tx.payload);
+        }
+        if let Some(tx) = self.sds_broadcast_sender.tick_start_broadcast(&self.config, dltime) {
+            self.send_d_sds_data(queue, tx.source_issi, tx.dest_gssi, SsiType::Gssi, tx.payload);
         }
     }
 
@@ -251,6 +265,13 @@ impl SdsBsSubentity {
             pdu.pre_coded_status
         );
 
+        // SDS command control: U-STATUS to ISSI 9999 from an authorized ISSI triggers
+        // a system action (restart, shutdown, kick_all) if the status code matches.
+        if dest_ssi == 9999 {
+            self.handle_sds_command_status(queue, source_ssi, &pdu.pre_coded_status);
+            return;
+        }
+
         // Route: local delivery, Brew forward, or drop
         if self.config.state_read().subscribers.is_registered(dest_ssi) {
             tracing::info!("SDS-STATUS: local delivery: {} -> {}", source_ssi, dest_ssi);
@@ -442,5 +463,61 @@ impl SdsBsSubentity {
             unimplemented_log!("SDS-STATUS: dm_ms_address not supported");
         }
         supported
+    }
+
+    /// Execute a system action triggered by an SDS U-STATUS command to ISSI 9999.
+    fn handle_sds_command_status(&mut self, _queue: &mut MessageQueue, source_ssi: u32, status: &PreCodedStatus) {
+        let status_code = status.into_raw() as u16;
+
+        let cfg = self.config.config();
+        let Some(ref ctrl) = cfg.cell.sds_command_control else {
+            tracing::debug!(
+                "SDS-CMD: U-STATUS to 9999 from {} (status={}) but sds_command_control not configured, ignoring",
+                source_ssi, status_code
+            );
+            return;
+        };
+
+        if !ctrl.authorized_issis.contains(&source_ssi) {
+            tracing::warn!(
+                "SDS-CMD: U-STATUS to 9999 from ISSI {} (status={}) — ISSI not in authorized_issis, ignoring",
+                source_ssi, status_code
+            );
+            return;
+        }
+
+        let Some(entry) = ctrl.commands.iter().find(|e| e.status_code == status_code) else {
+            tracing::debug!(
+                "SDS-CMD: U-STATUS to 9999 from ISSI {} status={} — no matching command, ignoring",
+                source_ssi, status_code
+            );
+            return;
+        };
+
+        tracing::info!(
+            "SDS-CMD: ISSI {} triggered action='{}' via status={}",
+            source_ssi, entry.action, status_code
+        );
+
+        match entry.action.as_str() {
+            "restart" => {
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let _ = std::process::Command::new("systemctl").args(["restart", "tetra"]).status();
+                });
+            }
+            "shutdown" => {
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let _ = std::process::Command::new("systemctl").args(["stop", "tetra"]).status();
+                });
+            }
+            "kick_all" => {
+                self.pending_actions.push(SdsPendingAction::KickAll);
+            }
+            other => {
+                tracing::warn!("SDS-CMD: unknown action '{}' for status={}, ignoring", other, status_code);
+            }
+        }
     }
 }

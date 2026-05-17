@@ -45,6 +45,12 @@ pub trait NetworkTransport: Send {
     fn is_connected(&self) -> bool {
         true
     }
+
+    /// Return the Brew protocol version advertised by the server in the last connect response.
+    /// Default is 0 (v0 / unknown). WebSocketTransport overrides this.
+    fn server_brew_version(&self) -> u8 {
+        0
+    }
 }
 
 /// Factory trait for creating transport instances

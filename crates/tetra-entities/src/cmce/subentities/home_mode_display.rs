@@ -6,7 +6,7 @@
 ///
 /// Ported from Mihajlo Stefanovic (Misadeks) bluestation feature/home-mode-display,
 /// adapted for flowstation architecture (no dltime in send_d_sds_data, Layer2Service split).
-use tetra_config::bluestation::{HomeModeDisplaySdsTextCodingScheme, SharedConfig};
+use tetra_config::bluestation::{CfgHomeModeDisplay, HomeModeDisplaySdsTextCodingScheme, SharedConfig};
 use tetra_core::{BitBuffer, TdmaTime};
 use tetra_saps::control::enums::sds_user_data::SdsUserData;
 
@@ -53,10 +53,16 @@ impl HomeModeDisplaySender {
     /// Called every tick. Returns `Some(HomeModeDisplayTx)` when it's time to broadcast,
     /// `None` otherwise. The caller (SdsBsSubentity) sends the returned PDU via send_d_sds_data.
     pub fn tick_start(&mut self, config: &SharedConfig, dltime: TdmaTime) -> Option<HomeModeDisplayTx> {
-        let home_mode_cfg = {
-            let cfg = config.config();
-            cfg.cell.home_mode_display.clone()
-        };
+        let cfg = config.config().cell.home_mode_display.clone();
+        self.tick_with_cfg(cfg, dltime)
+    }
+
+    pub fn tick_start_broadcast(&mut self, config: &SharedConfig, dltime: TdmaTime) -> Option<HomeModeDisplayTx> {
+        let cfg = config.config().cell.sds_broadcast.clone();
+        self.tick_with_cfg(cfg, dltime)
+    }
+
+    fn tick_with_cfg(&mut self, home_mode_cfg: Option<CfgHomeModeDisplay>, dltime: TdmaTime) -> Option<HomeModeDisplayTx> {
 
         let Some(home_mode_cfg) = home_mode_cfg else {
             // Feature disabled — reset timers so a re-enable works cleanly

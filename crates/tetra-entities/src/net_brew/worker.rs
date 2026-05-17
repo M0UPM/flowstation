@@ -23,7 +23,7 @@ use super::protocol::*;
 #[derive(Debug)]
 pub enum BrewEvent {
     /// Successfully connected to TetraPack server
-    Connected,
+    Connected { server_version: u8 },
 
     /// Disconnected (with reason)
     Disconnected(String),
@@ -223,7 +223,9 @@ impl<T: NetworkTransport> BrewWorker<T> {
             match self.transport.connect() {
                 Ok(()) => {
                     tracing::info!("BrewWorker: transport connected");
-                    let _ = self.event_sender.send(BrewEvent::Connected);
+                    let _ = self.event_sender.send(BrewEvent::Connected {
+                        server_version: self.transport.server_brew_version(),
+                    });
                 }
                 Err(e) => {
                     tracing::error!(
@@ -379,7 +381,7 @@ impl<T: NetworkTransport> BrewWorker<T> {
                         priority,
                         service,
                     } => {
-                        let msg = build_group_tx(&uuid, source_issi, dest_gssi, priority, service);
+                        let msg = build_group_tx(&uuid, source_issi, dest_gssi, priority, service, None);
                         if let Err(e) = self.transport.send_reliable(&msg) {
                             tracing::error!("BrewWorker: failed to send GROUP_TX: {}", e);
                         } else {

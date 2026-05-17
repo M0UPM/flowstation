@@ -26,19 +26,21 @@ pub enum TelemetryEvent {
     /// RSSI measurement for a known MS (dBFS)
     MsRssi { issi: u32, rssi_dbfs: f32 },
     /// Group call started
-    GroupCallStarted { call_id: u16, gssi: u32, caller_issi: u32 },
+    GroupCallStarted { call_id: u16, gssi: u32, caller_issi: u32, ts: u8 },
     /// Group call ended
     GroupCallEnded { call_id: u16, gssi: u32 },
     /// Speaker changed on active group call
     GroupCallSpeakerChanged { call_id: u16, gssi: u32, speaker_issi: u32 },
     /// Individual (P2P) call started
-    IndividualCallStarted { call_id: u16, calling_issi: u32, called_issi: u32, simplex: bool },
+    IndividualCallStarted { call_id: u16, calling_issi: u32, called_issi: u32, simplex: bool, ts: u8 },
     /// Individual call ended
     IndividualCallEnded { call_id: u16 },
     /// Energy saving mode updated for MS (0=StayAlive, 1=Eg1..7=Eg7)
     MsEnergySaving { issi: u32, mode: u8 },
     /// Brew (TetraPack) backhaul connection status changed
-    BrewConnected { connected: bool },
+    BrewConnected { connected: bool, server_version: u8 },
     /// SDS message activity (local delivery or group)
     SdsActivity { source_issi: u32, dest_issi: u32 },
+    /// Voice frame activity on a traffic timeslot (UL or DL)
+    TsVoiceActivity { ts: u8 },
 }

@@ -12,7 +12,7 @@ use tetra_core::{BitBuffer, Layer2Service, TetraAddress, SsiType};
 use tetra_saps::lcmc::LcmcMleUnitdataReq;
 
 use super::subentities::cc_bs::CcBsSubentity;
-use super::subentities::sds_bs::SdsBsSubentity;
+use super::subentities::sds_bs::{SdsBsSubentity, SdsPendingAction};
 use super::subentities::ss_bs::SsBsSubentity;
 
 pub struct CmceBs {
@@ -196,6 +196,19 @@ impl TetraEntityTrait for CmceBs {
                 CmceBs::do_control_command(&mut self.sds, &mut self.cc, queue, cmd, None);
             }
         }
+        // Drain SDS-triggered actions that require access to CcBsSubentity
+        let pending = std::mem::take(&mut self.sds.pending_actions);
+        for action in pending {
+            match action {
+                SdsPendingAction::KickAll => {
+                    let issis: Vec<u32> = self.cc.subscriber_issis();
+                    tracing::info!("SDS-CMD: kick_all — deregistering {} subscribers", issis.len());
+                    for issi in issis {
+                        self.cc.kick_ms(queue, issi);
+                    }
+                }
+            }
+        }
     }
 
     fn rx_prim(&mut self, queue: &mut MessageQueue, message: SapMsg) {
@@ -215,6 +228,10 @@ impl TetraEntityTrait for CmceBs {
                 // UL voice frame — feed to echo session if active, and forward to Brew for FDX calls
                 if let SapMsgInner::TmdCircuitDataInd(ref prim) = message.msg {
                     self.cc.handle_echo_ul_frame(queue, prim.ts, prim.data.clone());
+                    // Emit TS activity for dashboard visualizer
+                    if let Some(ref sink) = self.telemetry {
+                        let _ = sink.send(crate::net_telemetry::TelemetryEvent::TsVoiceActivity { ts: prim.ts });
+                    }
                     // Forward UL audio to Brew so TetraPack receives the terminal's voice
                     queue.push_back(message);
                 }
