@@ -72,7 +72,13 @@ pub struct ChanAllocElement {
 impl ChanAllocElement {
     pub fn from_bitbuf(buf: &mut BitBuffer) -> Result<Self, PduParseErr> {
         let val = buf.read_field(2, "alloc_type")?;
-        let alloc_type = ChanAllocType::try_from(val).unwrap(); // Never fails
+        // 2-bit field, ChanAllocType covers all 4 values, so this cannot fail today.
+        // Propagate as InvalidValue rather than unwrap so a future field-width or enum
+        // change can't panic the worker on wire data.
+        let alloc_type = ChanAllocType::try_from(val).map_err(|_| PduParseErr::InvalidValue {
+            field: "alloc_type",
+            value: val,
+        })?;
 
         let bitmap = buf.read_field(4, "ts_assigned")? as u8;
         let ts_assigned = [
@@ -83,7 +89,10 @@ impl ChanAllocElement {
         ];
 
         let val = buf.read_field(2, "ul_dl_assigned")?;
-        let ul_dl_assigned = UlDlAssignment::try_from(val).unwrap(); // Never fails
+        let ul_dl_assigned = UlDlAssignment::try_from(val).map_err(|_| PduParseErr::InvalidValue {
+            field: "ul_dl_assigned",
+            value: val,
+        })?;
 
         let clch_permission = buf.read_field(1, "clch_permission")? != 0;
         let cell_change_flag = buf.read_field(1, "cell_change_flag")? != 0;

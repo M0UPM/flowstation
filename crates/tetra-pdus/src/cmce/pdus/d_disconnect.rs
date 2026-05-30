@@ -30,8 +30,6 @@ impl DDisconnect {
     pub fn from_bitbuf(buffer: &mut BitBuffer) -> Result<Self, PduParseErr> {
         let pdu_type = buffer.read_field(5, "pdu_type")?;
         expect_pdu_type!(pdu_type, CmcePduTypeDl::DDisconnect)?;
-
-        assert!(pdu_type == CmcePduTypeDl::DDisconnect.into_raw());
         // Type1
         let call_identifier = buffer.read_field(14, "call_identifier")? as u16;
 

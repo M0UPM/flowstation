@@ -31,5 +31,8 @@ pub use sec_control::*;
 pub mod sec_security;
 pub use sec_security::*;
 
+pub mod sec_wx;
+pub use sec_wx::*;
+
 pub mod state;
 pub use state::*;

@@ -1052,6 +1052,10 @@ td code{
     <div class="logo-text">
       <div class="logo-name">FlowStation</div>
       <div class="logo-sub">{{STACK_VERSION}}</div>
+      <div id="update-badge" onclick="showPage('config',document.getElementById('nav-config'))"
+           style="display:none;cursor:pointer;margin-top:4px;font-size:11px;font-weight:700;
+                  color:#fff;background:var(--accent);border-radius:4px;padding:2px 8px"
+           title="Click to update"></div>
     </div>
   </div>
 
@@ -1510,13 +1514,100 @@ td code{
           <div class="card-actions">
             <button class="btn btn-warn" onclick="restartService()" data-i18n="restart">⟳ Restart</button>
             <button class="btn btn-danger" onclick="shutdownService()" data-i18n="shutdown">⏻ Shutdown</button>
-            <button class="btn" onclick="startUpdate()" data-i18n="update">⬆ Update</button>
+            <button class="btn" id="update-btn" onclick="startUpdate()" data-i18n="update">⬆ Update</button>
             <button class="btn btn-primary" onclick="saveConfig()" data-i18n="save">Save</button>
           </div>
         </div>
         <div class="card-body">
           <textarea id="config-editor" spellcheck="false" placeholder="Loading..."></textarea>
           <div class="config-msg" id="config-msg"></div>
+        </div>
+      </div>
+
+      <!-- ── ISSI WHITELIST ──
+           Editable access-control list. Empty list = open network (any ISSI may
+           register). Changes apply immediately at runtime AND are written back to
+           config.toml so they survive a restart. -->
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title" data-i18n="whitelist_title">ISSI Whitelist</div>
+          <div class="card-actions">
+            <span id="whitelist-status" class="badge" style="margin-right:8px"></span>
+            <button class="btn btn-primary" onclick="saveWhitelist()" data-i18n="save">Save</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="color:var(--muted);font-size:13px;margin-bottom:12px" data-i18n="whitelist_help">
+            When the list is empty, any radio may register (open network). When non-empty,
+            only the listed ISSIs are accepted; all others are rejected. Changes apply
+            instantly and persist across restarts.
+          </div>
+          <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+            <input type="number" id="whitelist-input" class="form-input" min="1" max="16777215"
+                   placeholder="e.g. 2260571" style="flex:1;min-width:160px"
+                   onkeydown="if(event.key==='Enter'){addWhitelistEntry();}">
+            <button class="btn" onclick="addWhitelistEntry()" data-i18n="whitelist_add">+ Add ISSI</button>
+          </div>
+          <div id="whitelist-chips" style="display:flex;gap:8px;flex-wrap:wrap;min-height:32px"></div>
+          <div class="config-msg" id="whitelist-msg"></div>
+        </div>
+      </div>
+
+      <!-- ── WX / METAR SERVICE ──
+           Built-in weather responder. On-demand: a radio SDSes "METAR <ICAO>" to the
+           service ISSI and gets a decoded reply. Periodic: auto-sends a station's METAR
+           to a chosen ISSI/GSSI at an interval. Toggles + targets editable here; applies
+           instantly and persists to config.toml. -->
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title" data-i18n="wx_title">WX / METAR Service</div>
+          <div class="card-actions">
+            <button class="btn btn-primary" onclick="saveWx()" data-i18n="save">Save</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="color:var(--muted);font-size:13px;margin-bottom:14px" data-i18n="wx_help">
+            Built-in weather service. Radios send an SDS like "METAR LROP" to the service
+            ISSI to get a decoded report. Optionally auto-send a fixed station's METAR to an
+            ISSI or talkgroup at a set interval. Data from aviationweather.gov.
+          </div>
+
+          <label style="display:flex;align-items:center;gap:10px;margin-bottom:14px;cursor:pointer">
+            <input type="checkbox" id="wx-enabled" style="width:18px;height:18px">
+            <span data-i18n="wx_enabled">Enable on-demand METAR responder</span>
+          </label>
+
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:18px;flex-wrap:wrap">
+            <label style="color:var(--muted);font-size:13px;min-width:140px" data-i18n="wx_service_issi">Service ISSI</label>
+            <input type="number" id="wx-service-issi" class="form-input" min="1" max="16777215"
+                   placeholder="9998" style="flex:1;min-width:140px">
+          </div>
+
+          <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
+
+          <label style="display:flex;align-items:center;gap:10px;margin-bottom:14px;cursor:pointer">
+            <input type="checkbox" id="wx-periodic-enabled" style="width:18px;height:18px">
+            <span data-i18n="wx_periodic_enabled">Enable periodic auto-broadcast</span>
+          </label>
+
+          <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:center">
+            <label style="color:var(--muted);font-size:13px" data-i18n="wx_periodic_icao">Station ICAO</label>
+            <input type="text" id="wx-periodic-icao" class="form-input" maxlength="4" placeholder="LROP" style="text-transform:uppercase">
+
+            <label style="color:var(--muted);font-size:13px" data-i18n="wx_periodic_dest">Destination</label>
+            <input type="number" id="wx-periodic-issi" class="form-input" min="1" max="16777215" placeholder="ISSI or GSSI">
+
+            <label style="color:var(--muted);font-size:13px" data-i18n="wx_periodic_isgroup">Destination is group</label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="wx-periodic-isgroup" style="width:18px;height:18px">
+              <span style="color:var(--muted);font-size:12px" data-i18n="wx_periodic_isgroup_hint">(GSSI instead of individual ISSI)</span>
+            </label>
+
+            <label style="color:var(--muted);font-size:13px" data-i18n="wx_periodic_interval">Interval (seconds)</label>
+            <input type="number" id="wx-periodic-interval" class="form-input" min="300" placeholder="1800">
+          </div>
+          <div style="color:var(--muted);font-size:11px;margin-top:6px" data-i18n="wx_interval_hint">Minimum 300 s (5 min) to avoid hammering the weather API.</div>
+          <div class="config-msg" id="wx-msg"></div>
         </div>
       </div>
     </div>
@@ -1830,6 +1921,13 @@ const LANGS={
     no_terminals:'No radios registered',no_calls:'No active calls',
     live_log:'Live Log',autoscroll:'Auto-scroll',filter_all:'All',
     clear:'Clear',restart:'⟳ Restart',shutdown:'⏻ Shutdown',save:'Save',
+    whitelist_title:'ISSI Whitelist',whitelist_add:'+ Add ISSI',whitelist_empty:'List empty — open network (any radio may register).',
+    whitelist_help:'When the list is empty, any radio may register (open network). When non-empty, only the listed ISSIs are accepted; all others are rejected. Changes apply instantly and persist across restarts.',
+    whitelist_enforced:'ENFORCED',whitelist_open:'OPEN',whitelist_invalid:'Enter a valid ISSI (1–16777215).',
+    wx_title:'WX / METAR Service',wx_help:'Built-in weather service. Radios send an SDS like "METAR LROP" to the service ISSI to get a decoded report. Optionally auto-send a fixed station\'s METAR to an ISSI or talkgroup at a set interval. Data from aviationweather.gov.',
+    wx_enabled:'Enable on-demand METAR responder',wx_service_issi:'Service ISSI',wx_periodic_enabled:'Enable periodic auto-broadcast',
+    wx_periodic_icao:'Station ICAO',wx_periodic_dest:'Destination',wx_periodic_isgroup:'Destination is group',wx_periodic_isgroup_hint:'(GSSI instead of individual ISSI)',
+    wx_periodic_interval:'Interval (seconds)',wx_interval_hint:'Minimum 300 s (5 min) to avoid hammering the weather API.',wx_periodic_incomplete:'Set both station ICAO and destination for periodic mode.',
     sds_title:'⬡ Send SDS Message',sds_dest:'Destination ISSI',
     live_sds_desc:'Broadcast a text message to all radios on the cell, repeating at the Home Mode Display interval. Repeats until deleted or the repeat count is reached.',
     live_sds_text:'Message text (max 251 chars)',live_sds_repeat:'Repeat (0=∞)',live_sds_send:'📢 Broadcast',
@@ -1851,7 +1949,7 @@ const LANGS={
     confirm_shutdown:'Shutdown FlowStation?\nThe service will stop and must be restarted manually.',
     confirm_logout:'Log out?',
     saved:'✓ Saved — restart to apply.',save_fail:'✗ Save failed',conn_error:'Connection error.',
-    update:'⬆ Update',update_title:'OTA Update — github.com/razvanzeces/flowstation',
+    update:'⬆ Update',update_available:'Update available',update_title:'OTA Update — github.com/razvanzeces/flowstation',
     update_confirm:'Pull latest from main and rebuild?\nThe service will restart automatically.',
     update_running:'Updating… do not close this window.',
     update_done_ok:'✓ Update complete. Restarting…',
@@ -1892,6 +1990,13 @@ const LANGS={
     no_terminals:'Niciun radio înregistrat',no_calls:'Niciun apel activ',
     live_log:'Log Live',autoscroll:'Auto-scroll',filter_all:'Toate',
     clear:'Șterge',restart:'⟳ Repornire',shutdown:'⏻ Oprire',save:'Salvează',
+    whitelist_title:'Listă albă ISSI',whitelist_add:'+ Adaugă ISSI',whitelist_empty:'Listă goală — rețea deschisă (orice radio se poate înregistra).',
+    whitelist_help:'Când lista e goală, orice radio se poate înregistra (rețea deschisă). Când are intrări, doar ISSI-urile listate sunt acceptate; restul sunt respinse. Modificările se aplică instant și persistă după repornire.',
+    whitelist_enforced:'ACTIVĂ',whitelist_open:'DESCHISĂ',whitelist_invalid:'Introdu un ISSI valid (1–16777215).',
+    wx_title:'Serviciu WX / METAR',wx_help:'Serviciu meteo integrat. Radiourile trimit un SDS de forma "METAR LROP" către ISSI-ul serviciului și primesc raportul decodat. Opțional, trimite automat METAR-ul unei stații fixe către un ISSI sau grup la interval. Date de la aviationweather.gov.',
+    wx_enabled:'Activează răspunsul METAR la cerere',wx_service_issi:'ISSI serviciu',wx_periodic_enabled:'Activează trimiterea periodică',
+    wx_periodic_icao:'Cod ICAO stație',wx_periodic_dest:'Destinație',wx_periodic_isgroup:'Destinația e grup',wx_periodic_isgroup_hint:'(GSSI în loc de ISSI individual)',
+    wx_periodic_interval:'Interval (secunde)',wx_interval_hint:'Minim 300 s (5 min) ca să nu suprasolicităm API-ul meteo.',wx_periodic_incomplete:'Setează și ICAO stație și destinație pentru modul periodic.',
     live_sds_desc:'Transmite un mesaj text către toate radiourile din celulă, repetând la intervalul Home Mode Display.',
     live_sds_text:'Text mesaj (max 251 caractere)',live_sds_repeat:'Repetări (0=∞)',live_sds_send:'📢 Broadcast',
     live_sds_clear_all:'Șterge Tot',live_sds_empty:'Niciun broadcast activ.',
@@ -1913,7 +2018,7 @@ const LANGS={
     confirm_shutdown:'Oprire FlowStation?\nServiciul se va opri și trebuie repornit manual.',
     confirm_logout:'Deconectare?',
     saved:'✓ Salvat — repornire pentru aplicare.',save_fail:'✗ Salvare eșuată',conn_error:'Eroare de conexiune.',
-    update:'⬆ Update',update_title:'Update OTA — github.com/razvanzeces/flowstation',
+    update:'⬆ Update',update_available:'Actualizare disponibilă',update_title:'Update OTA — github.com/razvanzeces/flowstation',
     update_confirm:'Descarcă ultima versiune din main și recompilează?\nServiciul va reporni automat.',
     update_running:'Se actualizează… nu închide fereastra.',
     update_done_ok:'✓ Update finalizat. Se repornește…',
@@ -1953,6 +2058,13 @@ const LANGS={
     no_terminals:'Keine Radios registriert',no_calls:'Keine aktiven Anrufe',
     live_log:'Live-Log',autoscroll:'Auto-Scroll',filter_all:'Alle',
     clear:'Löschen',restart:'⟳ Neustart',shutdown:'⏻ Herunterfahren',save:'Speichern',
+    whitelist_title:'ISSI-Whitelist',whitelist_add:'+ ISSI hinzufügen',whitelist_empty:'Liste leer — offenes Netz (jedes Funkgerät darf sich anmelden).',
+    whitelist_help:'Ist die Liste leer, darf sich jedes Funkgerät anmelden (offenes Netz). Bei Einträgen werden nur die gelisteten ISSIs akzeptiert; alle anderen werden abgewiesen. Änderungen wirken sofort und bleiben nach Neustart erhalten.',
+    whitelist_enforced:'AKTIV',whitelist_open:'OFFEN',whitelist_invalid:'Gültige ISSI eingeben (1–16777215).',
+    wx_title:'WX / METAR-Dienst',wx_help:'Integrierter Wetterdienst. Funkgeräte senden eine SDS wie "METAR LROP" an die Dienst-ISSI und erhalten einen dekodierten Bericht. Optional automatisches Senden des METAR einer festen Station an eine ISSI oder Gruppe in Intervallen. Daten von aviationweather.gov.',
+    wx_enabled:'METAR-Antwort auf Anfrage aktivieren',wx_service_issi:'Dienst-ISSI',wx_periodic_enabled:'Periodisches Senden aktivieren',
+    wx_periodic_icao:'Stations-ICAO',wx_periodic_dest:'Ziel',wx_periodic_isgroup:'Ziel ist Gruppe',wx_periodic_isgroup_hint:'(GSSI statt einzelner ISSI)',
+    wx_periodic_interval:'Intervall (Sekunden)',wx_interval_hint:'Mindestens 300 s (5 Min), um die Wetter-API nicht zu überlasten.',wx_periodic_incomplete:'Stations-ICAO und Ziel für den periodischen Modus setzen.',
     live_sds_desc:'Sendet eine Textnachricht an alle Funkgeräte der Zelle, wiederholt im Home-Mode-Display-Intervall.',
     live_sds_text:'Nachrichtentext (max. 251 Zeichen)',live_sds_repeat:'Wiederh. (0=∞)',live_sds_send:'📢 Senden',
     live_sds_clear_all:'Alle löschen',live_sds_empty:'Keine aktiven Broadcasts.',
@@ -1974,7 +2086,7 @@ const LANGS={
     confirm_shutdown:'FlowStation herunterfahren?\nDer Dienst wird gestoppt und muss manuell neu gestartet werden.',
     confirm_logout:'Abmelden?',
     saved:'✓ Gespeichert — Neustart zum Anwenden.',save_fail:'✗ Fehler beim Speichern',conn_error:'Verbindungsfehler.',
-    update:'⬆ Update',update_title:'OTA-Update — github.com/razvanzeces/flowstation',
+    update:'⬆ Update',update_available:'Update verfügbar',update_title:'OTA-Update — github.com/razvanzeces/flowstation',
     update_confirm:'Neueste Version von main holen und neu bauen?\nDer Dienst startet automatisch neu.',
     update_running:'Aktualisierung läuft… Fenster nicht schließen.',
     update_done_ok:'✓ Update abgeschlossen. Neustart…',
@@ -2014,6 +2126,13 @@ const LANGS={
     no_terminals:'No hay radios registrados',no_calls:'No hay llamadas activas',
     live_log:'Log en Vivo',autoscroll:'Auto-desplaz.',filter_all:'Todos',
     clear:'Limpiar',restart:'⟳ Reiniciar',shutdown:'⏻ Apagar',save:'Guardar',
+    whitelist_title:'Lista blanca ISSI',whitelist_add:'+ Añadir ISSI',whitelist_empty:'Lista vacía — red abierta (cualquier radio puede registrarse).',
+    whitelist_help:'Cuando la lista está vacía, cualquier radio puede registrarse (red abierta). Con entradas, solo se aceptan los ISSI listados; el resto se rechazan. Los cambios se aplican al instante y persisten tras reiniciar.',
+    whitelist_enforced:'ACTIVA',whitelist_open:'ABIERTA',whitelist_invalid:'Introduce un ISSI válido (1–16777215).',
+    wx_title:'Servicio WX / METAR',wx_help:'Servicio meteorológico integrado. Las radios envían un SDS como "METAR LROP" al ISSI del servicio y reciben un informe decodificado. Opcionalmente envía automáticamente el METAR de una estación fija a un ISSI o grupo a intervalos. Datos de aviationweather.gov.',
+    wx_enabled:'Activar respuesta METAR a petición',wx_service_issi:'ISSI del servicio',wx_periodic_enabled:'Activar envío periódico',
+    wx_periodic_icao:'ICAO de estación',wx_periodic_dest:'Destino',wx_periodic_isgroup:'El destino es grupo',wx_periodic_isgroup_hint:'(GSSI en vez de ISSI individual)',
+    wx_periodic_interval:'Intervalo (segundos)',wx_interval_hint:'Mínimo 300 s (5 min) para no saturar la API meteorológica.',wx_periodic_incomplete:'Indica ICAO de estación y destino para el modo periódico.',
     live_sds_desc:'Transmite un mensaje de texto a todos los radios de la celda, repitiéndose al intervalo de Home Mode Display.',
     live_sds_text:'Texto del mensaje (máx. 251 caracteres)',live_sds_repeat:'Repetir (0=∞)',live_sds_send:'📢 Difundir',
     live_sds_clear_all:'Borrar Todo',live_sds_empty:'No hay difusiones activas.',
@@ -2035,7 +2154,7 @@ const LANGS={
     confirm_shutdown:'¿Apagar FlowStation?\nEl servicio se detendrá y deberá reiniciarse manualmente.',
     confirm_logout:'¿Cerrar sesión?',
     saved:'✓ Guardado — reinicia para aplicar.',save_fail:'✗ Error al guardar',conn_error:'Error de conexión.',
-    update:'⬆ Update',update_title:'Actualización OTA — github.com/razvanzeces/flowstation',
+    update:'⬆ Update',update_available:'Actualización disponible',update_title:'Actualización OTA — github.com/razvanzeces/flowstation',
     update_confirm:'¿Obtener la última versión de main y recompilar?\nEl servicio se reiniciará automáticamente.',
     update_running:'Actualizando… no cierres esta ventana.',
     update_done_ok:'✓ Actualización completa. Reiniciando…',
@@ -2075,6 +2194,13 @@ const LANGS={
     no_terminals:'Nincs regisztrált rádió',no_calls:'Nincs aktív hívás',
     live_log:'Élő napló',autoscroll:'Automatikus görgetés',filter_all:'Mind',
     clear:'Törlés',restart:'⟳ Újraindítás',shutdown:'⏻ Leállítás',save:'Mentés',
+    whitelist_title:'ISSI engedélyezőlista',whitelist_add:'+ ISSI hozzáadása',whitelist_empty:'Üres lista — nyílt hálózat (bármely rádió regisztrálhat).',
+    whitelist_help:'Ha a lista üres, bármely rádió regisztrálhat (nyílt hálózat). Ha vannak elemek, csak a listázott ISSI-k engedélyezettek; a többit elutasítja. A módosítások azonnal érvénybe lépnek és újraindítás után is megmaradnak.',
+    whitelist_enforced:'AKTÍV',whitelist_open:'NYÍLT',whitelist_invalid:'Adjon meg érvényes ISSI-t (1–16777215).',
+    wx_title:'WX / METAR szolgáltatás',wx_help:'Beépített időjárás-szolgáltatás. A rádiók "METAR LROP" formájú SDS-t küldenek a szolgáltatás ISSI-jére, és dekódolt jelentést kapnak. Opcionálisan automatikusan elküldi egy rögzített állomás METAR-ját egy ISSI-re vagy csoportra adott időközönként. Adatok: aviationweather.gov.',
+    wx_enabled:'METAR válasz kérésre engedélyezése',wx_service_issi:'Szolgáltatás ISSI',wx_periodic_enabled:'Időszakos küldés engedélyezése',
+    wx_periodic_icao:'Állomás ICAO',wx_periodic_dest:'Cél',wx_periodic_isgroup:'A cél csoport',wx_periodic_isgroup_hint:'(GSSI egyedi ISSI helyett)',
+    wx_periodic_interval:'Időköz (másodperc)',wx_interval_hint:'Legalább 300 mp (5 perc), hogy ne terhelje túl az időjárás API-t.',wx_periodic_incomplete:'Add meg az állomás ICAO-t és a célt az időszakos módhoz.',
     sds_title:'⬡ SDS üzenet küldése',sds_dest:'Cél ISSI',
     sds_msg_label:'Üzenet',cancel:'Mégse',send:'Küldés',
     th_issi:'ISSI',th_groups:'Csoportok',th_ee:'EE',th_signal:'Jelerősség',
@@ -2091,7 +2217,7 @@ const LANGS={
     confirm_shutdown:'Leállítja a FlowStation-t?\nA szolgáltatást kézzel kell újraindítani.',
     confirm_logout:'Kijelentkezik?',
     saved:'✓ Mentve — újraindítás szükséges az alkalmazáshoz.',save_fail:'✗ Mentési hiba',conn_error:'Kapcsolódási hiba.',
-    update:'⬆ Frissítés',update_title:'OTA frissítés — github.com/razvanzeces/flowstation',
+    update:'⬆ Frissítés',update_available:'Elérhető frissítés',update_title:'OTA frissítés — github.com/razvanzeces/flowstation',
     update_confirm:'Letölti a legújabb verziót a main ágból és újraépíti?\nA szolgáltatás automatikusan újraindul.',
     update_running:'Frissítés folyamatban… ne zárja be az ablakot.',
     update_done_ok:'✓ Frissítés kész. Újraindul…',
@@ -2128,6 +2254,13 @@ const LANGS={
     no_terminals:'暂无终端注册',no_calls:'无活跃通话',
     live_log:'实时日志',autoscroll:'自动滚动',filter_all:'全部',
     clear:'清除',restart:'⟳ 重启',shutdown:'⏻ 关机',save:'保存',
+    whitelist_title:'ISSI 白名单',whitelist_add:'+ 添加 ISSI',whitelist_empty:'列表为空 — 开放网络（任何电台均可注册）。',
+    whitelist_help:'列表为空时，任何电台均可注册（开放网络）。有条目时，仅接受列出的 ISSI，其余一律拒绝。更改即时生效并在重启后保留。',
+    whitelist_enforced:'已启用',whitelist_open:'开放',whitelist_invalid:'请输入有效的 ISSI（1–16777215）。',
+    wx_title:'WX / METAR 服务',wx_help:'内置气象服务。电台向服务 ISSI 发送如 "METAR LROP" 的 SDS 即可获得解码报告。可选择按间隔自动向 ISSI 或群组发送固定台站的 METAR。数据来自 aviationweather.gov。',
+    wx_enabled:'启用按需 METAR 响应',wx_service_issi:'服务 ISSI',wx_periodic_enabled:'启用定时广播',
+    wx_periodic_icao:'台站 ICAO',wx_periodic_dest:'目标',wx_periodic_isgroup:'目标为群组',wx_periodic_isgroup_hint:'（GSSI 而非单个 ISSI）',
+    wx_periodic_interval:'间隔（秒）',wx_interval_hint:'最少 300 秒（5 分钟），以免频繁请求气象 API。',wx_periodic_incomplete:'定时模式需同时设置台站 ICAO 和目标。',
     sds_title:'⬡ 发送 SDS 短消息',sds_dest:'目标 ISSI',
     live_sds_desc:'向本小区所有终端广播文本消息，按 Home Mode Display 间隔重复发送。直到删除或达到重复次数为止。',
     live_sds_text:'消息内容（最多 251 字符）',live_sds_repeat:'重复次数 (0=无限)',live_sds_send:'📢 广播',
@@ -2149,7 +2282,7 @@ const LANGS={
     confirm_shutdown:'确定关闭 FlowStation？\n服务将停止，需要手动重启。',
     confirm_logout:'确定注销吗？',
     saved:'✓ 已保存 — 重启后生效',save_fail:'✗ 保存失败',conn_error:'连接错误',
-    update:'⬆ 更新',update_title:'OTA 在线更新 — github.com/razvanzeces/flowstation',
+    update:'⬆ 更新',update_available:'有可用更新',update_title:'OTA 在线更新 — github.com/razvanzeces/flowstation',
     update_confirm:'是否从 main 分支拉取最新代码并重新构建？\n服务将自动重启。',
     update_running:'正在更新… 请不要关闭此窗口',
     update_done_ok:'✓ 更新完成，正在重启…',
@@ -2222,7 +2355,7 @@ function showPage(name,el){
   if(el)el.classList.add('active');
   else{const nav=document.getElementById('nav-'+name);if(nav)nav.classList.add('active');}
   document.getElementById('topbar-title').textContent=t(name)||name;
-  if(name==='config')loadConfig();
+  if(name==='config'){loadConfig();loadWhitelist();loadWx();}
   if(name==='system'){loadSystemInfo();loadConfigProfiles();loadLiveSds();}
   else if(sysAutoRefreshTimer){clearInterval(sysAutoRefreshTimer);sysAutoRefreshTimer=null;const cb=document.getElementById('sys-autorefresh');if(cb)cb.checked=false;}
   if(name==='wifi')wifiRefresh();
@@ -2896,6 +3029,94 @@ async function saveConfig(){
   catch(e){setConfigMsg(t('conn_error'),false);}
 }
 function setConfigMsg(txt,ok){const el=document.getElementById('config-msg');el.textContent=txt;el.style.color=ok?'var(--accent)':'var(--danger)';}
+
+// ── ISSI Whitelist ─────────────────────────────────────────────────────────
+let whitelistEntries=[];
+async function loadWhitelist(){
+  try{
+    const r=await fetch('/api/whitelist');
+    if(!r.ok){setWhitelistMsg(t('conn_error'),false);return;}
+    const d=await r.json();
+    whitelistEntries=(d.issi_whitelist||[]).slice().sort((a,b)=>a-b);
+    renderWhitelist();
+    const badge=document.getElementById('whitelist-status');
+    if(d.enabled){badge.textContent=t('whitelist_enforced');badge.style.color='var(--accent)';}
+    else{badge.textContent=t('whitelist_open');badge.style.color='var(--muted)';}
+  }catch{setWhitelistMsg(t('conn_error'),false);}
+}
+function renderWhitelist(){
+  const box=document.getElementById('whitelist-chips');
+  if(!whitelistEntries.length){
+    box.innerHTML='<span style="color:var(--muted);font-size:13px" data-i18n="whitelist_empty">'+t('whitelist_empty')+'</span>';
+    return;
+  }
+  box.innerHTML=whitelistEntries.map(issi=>
+    '<span style="display:inline-flex;align-items:center;gap:6px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:13px">'+
+    issi+
+    '<span style="cursor:pointer;color:var(--danger);font-weight:700" onclick="removeWhitelistEntry('+issi+')">×</span>'+
+    '</span>'
+  ).join('');
+}
+function addWhitelistEntry(){
+  const inp=document.getElementById('whitelist-input');
+  const v=parseInt(inp.value);
+  if(!v||v<1||v>16777215){setWhitelistMsg(t('whitelist_invalid'),false);inp.focus();return;}
+  if(whitelistEntries.includes(v)){inp.value='';return;}
+  whitelistEntries.push(v);
+  whitelistEntries.sort((a,b)=>a-b);
+  renderWhitelist();
+  inp.value='';
+  inp.focus();
+}
+function removeWhitelistEntry(issi){
+  whitelistEntries=whitelistEntries.filter(x=>x!==issi);
+  renderWhitelist();
+}
+async function saveWhitelist(){
+  try{
+    const r=await fetch('/api/whitelist',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({issi_whitelist:whitelistEntries})});
+    if(r.ok){setWhitelistMsg(t('saved'),true);loadWhitelist();}
+    else setWhitelistMsg(t('save_fail')+': '+await r.text(),false);
+  }catch{setWhitelistMsg(t('conn_error'),false);}
+}
+function setWhitelistMsg(txt,ok){const el=document.getElementById('whitelist-msg');el.textContent=txt;el.style.color=ok?'var(--accent)':'var(--danger)';setTimeout(()=>{if(el.textContent===txt)el.textContent='';},4000);}
+
+// ── WX / METAR service ──────────────────────────────────────────────────────
+async function loadWx(){
+  try{
+    const r=await fetch('/api/wx');
+    if(!r.ok){setWxMsg(t('conn_error'),false);return;}
+    const d=await r.json();
+    document.getElementById('wx-enabled').checked=!!d.enabled;
+    document.getElementById('wx-service-issi').value=d.service_issi||'';
+    document.getElementById('wx-periodic-enabled').checked=!!d.periodic_enabled;
+    document.getElementById('wx-periodic-icao').value=d.periodic_icao||'';
+    document.getElementById('wx-periodic-issi').value=d.periodic_issi||'';
+    document.getElementById('wx-periodic-isgroup').checked=!!d.periodic_is_group;
+    document.getElementById('wx-periodic-interval').value=d.periodic_interval_secs||1800;
+  }catch{setWxMsg(t('conn_error'),false);}
+}
+async function saveWx(){
+  const body={
+    enabled:document.getElementById('wx-enabled').checked,
+    service_issi:parseInt(document.getElementById('wx-service-issi').value)||9998,
+    periodic_enabled:document.getElementById('wx-periodic-enabled').checked,
+    periodic_issi:parseInt(document.getElementById('wx-periodic-issi').value)||0,
+    periodic_is_group:document.getElementById('wx-periodic-isgroup').checked,
+    periodic_icao:(document.getElementById('wx-periodic-icao').value||'').trim().toUpperCase(),
+    periodic_interval_secs:Math.max(300,parseInt(document.getElementById('wx-periodic-interval').value)||1800)
+  };
+  if(body.periodic_enabled&&(!body.periodic_issi||!body.periodic_icao)){setWxMsg(t('wx_periodic_incomplete'),false);return;}
+  try{
+    const r=await fetch('/api/wx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){setWxMsg(t('saved'),true);loadWx();}
+    else setWxMsg(t('save_fail')+': '+await r.text(),false);
+  }catch{setWxMsg(t('conn_error'),false);}
+}
+function setWxMsg(txt,ok){const el=document.getElementById('wx-msg');el.textContent=txt;el.style.color=ok?'var(--accent)':'var(--danger)';setTimeout(()=>{if(el.textContent===txt)el.textContent='';},4000);}
+
+
 function wsSend(msg){if(ws&&ws.readyState===WebSocket.OPEN){ws.send(JSON.stringify(msg));return true;}return false;}
 async function restartService(){if(!confirm(t('confirm_restart')))return;wsSend({type:'restart'});}
 async function shutdownService(){if(!confirm(t('confirm_shutdown')))return;wsSend({type:'shutdown'});}
@@ -3818,6 +4039,28 @@ window.addEventListener('resize', () => {
 connect();
 // Probe NetworkManager availability once at boot — toggles the WiFi nav item.
 wifiProbeAvailable();
+
+// ── GitHub update-check ─────────────────────────────────────────────────────
+// Best-effort: query GitHub for the latest release once at boot (and when the
+// config page is opened). If a newer version exists, reveal the header badge and
+// highlight the Update button. Failures are silent.
+async function checkUpdate(){
+  try{
+    const r=await fetch('/api/update/check');
+    if(!r.ok)return;
+    const d=await r.json();
+    const badge=document.getElementById('update-badge');
+    const btn=document.getElementById('update-btn');
+    if(d&&d.update_available&&d.latest){
+      if(badge){badge.style.display='inline-block';badge.textContent='⬆ '+t('update_available')+' '+d.latest;}
+      if(btn){btn.classList.add('btn-primary');btn.textContent='⬆ '+t('update')+' → '+d.latest;}
+    }else{
+      if(badge)badge.style.display='none';
+      if(btn){btn.classList.remove('btn-primary');btn.textContent='⬆ '+t('update');}
+    }
+  }catch{/* silent */}
+}
+checkUpdate();
 </script>
 </body>
 </html>

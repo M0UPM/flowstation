@@ -29,8 +29,16 @@ pub struct MacData {
 
 impl MacData {
     pub fn from_bitbuf(buf: &mut BitBuffer) -> Result<Self, PduParseErr> {
-        // required constant mac_pdu_type
-        assert!(buf.read_field(2, "mac_pdu_type")? == 0);
+        // required constant mac_pdu_type — MacData is type 0. A corrupted or misrouted
+        // burst could carry a different value; return InvalidValue instead of asserting
+        // so a single bad PDU can't panic the UMAC worker and take down the cell.
+        let mac_pdu_type = buf.read_field(2, "mac_pdu_type")?;
+        if mac_pdu_type != 0 {
+            return Err(PduParseErr::InvalidValue {
+                field: "mac_pdu_type",
+                value: mac_pdu_type,
+            });
+        }
         let fill_bits = buf.read_field(1, "fill_bits")? != 0;
         let encrypted = buf.read_field(1, "encrypted")? != 0;
         let addr_type = buf.read_field(2, "addr_type")? as u8;
@@ -74,7 +82,12 @@ impl MacData {
             1 => {
                 let frag_flag = buf.read_field(1, "frag_flag")? != 0;
                 let val = buf.read_field(4, "reservation_requirement")?;
-                let res_req = ReservationRequirement::try_from(val).unwrap(); // can't fail
+                // 4-bit field fully covered by ReservationRequirement; propagate rather
+                // than unwrap to stay panic-free.
+                let res_req = ReservationRequirement::try_from(val).map_err(|_| PduParseErr::InvalidValue {
+                    field: "reservation_requirement",
+                    value: val,
+                })?;
                 buf.read_bits(1); // Reserved bit
                 (None, Some(frag_flag), Some(res_req))
             }

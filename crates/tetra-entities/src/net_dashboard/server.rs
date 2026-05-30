@@ -1066,6 +1066,14 @@ fn handle_connection(
                 }
             }
         }
+    } else if req_line.contains("GET /api/update/check") {
+        let mut buf = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            let _ = buf.read_line(&mut line);
+            if line == "\r\n" || line.is_empty() || line == "\n" { break; }
+        }
+        serve_update_check(buf.into_inner());
     } else if req_line.contains("GET /api/update/status") {
         let mut buf = BufReader::new(stream);
         loop {
@@ -1148,6 +1156,58 @@ fn handle_connection(
             Ok(_) => http_response(buf.into_inner(), 200, "OK"),
             Err(e) => http_response(buf.into_inner(), 500, &e.to_string()),
         }
+    } else if req_line.contains("GET /api/whitelist") {
+        let mut buf = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            let _ = buf.read_line(&mut line);
+            if line == "\r\n" || line.is_empty() || line == "\n" { break; }
+        }
+        serve_whitelist_get(buf.into_inner(), &shared_config);
+    } else if req_line.contains("POST /api/whitelist") {
+        let mut buf = BufReader::new(stream);
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            let _ = buf.read_line(&mut line);
+            if line == "\r\n" || line.is_empty() || line == "\n" { break; }
+            let lower = line.to_lowercase();
+            if lower.starts_with("content-length:") {
+                content_length = lower.trim_start_matches("content-length:")
+                    .trim().trim_end_matches("\r\n").trim_end_matches('\n')
+                    .parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        let _ = buf.read_exact(&mut body);
+        let body_str = String::from_utf8_lossy(&body);
+        serve_whitelist_post(buf.into_inner(), &shared_config, &config_path, body_str.as_ref());
+    } else if req_line.contains("GET /api/wx") {
+        let mut buf = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            let _ = buf.read_line(&mut line);
+            if line == "\r\n" || line.is_empty() || line == "\n" { break; }
+        }
+        serve_wx_get(buf.into_inner(), &shared_config);
+    } else if req_line.contains("POST /api/wx") {
+        let mut buf = BufReader::new(stream);
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            let _ = buf.read_line(&mut line);
+            if line == "\r\n" || line.is_empty() || line == "\n" { break; }
+            let lower = line.to_lowercase();
+            if lower.starts_with("content-length:") {
+                content_length = lower.trim_start_matches("content-length:")
+                    .trim().trim_end_matches("\r\n").trim_end_matches('\n')
+                    .parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        let _ = buf.read_exact(&mut body);
+        let body_str = String::from_utf8_lossy(&body);
+        serve_wx_post(buf.into_inner(), &shared_config, &config_path, body_str.as_ref());
     } else if req_line.contains("GET /api/config") {
         let mut buf = BufReader::new(stream);
         loop {
@@ -1534,6 +1594,196 @@ fn serve_update_status(mut stream: TcpStream, update_state: &SharedUpdateState) 
     );
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(body.as_bytes());
+}
+
+/// GET /api/update/check — query GitHub for the latest release and report whether a newer
+/// version than the running build exists. Best-effort; on any failure returns
+/// check_failed=true so the dashboard simply hides the badge.
+fn serve_update_check(mut stream: TcpStream) {
+    let result = crate::net_dashboard::update_check::check_for_update(tetra_core::STACK_VERSION);
+    let body = result.to_json();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+}
+
+/// GET /api/whitelist — return the effective whitelist as JSON:
+/// `{"issi_whitelist":[...], "source":"override"|"config", "enabled":bool}`.
+/// `enabled` is false when the list is empty (open network).
+fn serve_whitelist_get(
+    mut stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+) {
+    let (list, source): (Vec<u32>, &str) = match shared_config {
+        Some(cfg) => {
+            let override_list = cfg.state_read().issi_whitelist_override.clone();
+            match override_list {
+                Some(l) => (l, "override"),
+                None => (cfg.config().security.issi_whitelist.clone(), "config"),
+            }
+        }
+        None => (Vec::new(), "config"),
+    };
+    let items: Vec<String> = list.iter().map(|n| n.to_string()).collect();
+    let body = format!(
+        "{{\"issi_whitelist\":[{}],\"source\":\"{}\",\"enabled\":{}}}",
+        items.join(","),
+        source,
+        !list.is_empty()
+    );
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+}
+
+/// POST /api/whitelist — set the whitelist. Body: JSON array `[1,2,3]` or
+/// `{"issi_whitelist":[1,2,3]}`. Applies immediately via the StackState override AND
+/// rewrites the TOML so it survives a restart. An empty list = open network.
+fn serve_whitelist_post(
+    stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+    config_path: &str,
+    body: &str,
+) {
+    use crate::net_dashboard::whitelist;
+
+    let list = match whitelist::parse_whitelist_body(body) {
+        Ok(l) => l,
+        Err(e) => {
+            http_response(stream, 400, &format!("Invalid whitelist: {e}"));
+            return;
+        }
+    };
+
+    let Some(cfg) = shared_config else {
+        http_response(stream, 503, "Config not available");
+        return;
+    };
+
+    // 1) Apply at runtime immediately so the next registration sees it.
+    {
+        let mut state = cfg.state_write();
+        state.issi_whitelist_override = Some(list.clone());
+    }
+
+    // 2) Persist to TOML so it survives a restart.
+    if let Err(e) = whitelist::write_whitelist_to_toml(config_path, &list) {
+        tracing::warn!("Dashboard: whitelist applied at runtime but failed to persist to TOML: {}", e);
+        // Runtime change still took effect; report partial success so the operator knows
+        // to check file permissions.
+        http_response(stream, 200, "Applied at runtime; failed to write config file (check permissions)");
+        return;
+    }
+
+    tracing::info!("Dashboard: ISSI whitelist updated ({} entries)", list.len());
+    http_response(stream, 200, "OK");
+}
+
+// ---------------------------------------------------------------------------
+// WX/METAR service config (dashboard-editable). See net_dashboard::wx_service.
+// ---------------------------------------------------------------------------
+
+/// GET /api/wx — return the effective WX service settings as JSON.
+fn serve_wx_get(
+    mut stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+) {
+    let wx = match shared_config {
+        Some(cfg) => cfg.effective_wx_service(),
+        None => tetra_config::bluestation::CfgWxService::default(),
+    };
+    let body = format!(
+        "{{\"enabled\":{},\"service_issi\":{},\"periodic_enabled\":{},\"periodic_issi\":{},\"periodic_is_group\":{},\"periodic_icao\":\"{}\",\"periodic_interval_secs\":{}}}",
+        wx.enabled,
+        wx.service_issi,
+        wx.periodic_enabled,
+        wx.periodic_issi,
+        wx.periodic_is_group,
+        wx.periodic_icao.replace('\\', "\\\\").replace('"', "\\\""),
+        wx.periodic_interval_secs
+    );
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+}
+
+/// POST /api/wx — update WX service settings. Body: JSON object with the same fields as
+/// GET. Applies immediately via the StackState override AND rewrites the TOML.
+fn serve_wx_post(
+    stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+    config_path: &str,
+    body: &str,
+) {
+    use tetra_config::bluestation::WxRuntimeOverride;
+
+    let json: serde_json::Value = match serde_json::from_str(body.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            http_response(stream, 400, &format!("Invalid JSON: {e}"));
+            return;
+        }
+    };
+
+    let Some(cfg) = shared_config else {
+        http_response(stream, 503, "Config not available");
+        return;
+    };
+
+    // Start from the current effective values so a partial POST only changes what it sends.
+    let cur = cfg.effective_wx_service();
+    let as_u32 = |v: &serde_json::Value, k: &str, d: u32| {
+        v.get(k).and_then(|x| x.as_u64()).map(|n| n as u32).unwrap_or(d)
+    };
+    let as_u64 = |v: &serde_json::Value, k: &str, d: u64| {
+        v.get(k).and_then(|x| x.as_u64()).unwrap_or(d)
+    };
+    let as_bool = |v: &serde_json::Value, k: &str, d: bool| {
+        v.get(k).and_then(|x| x.as_bool()).unwrap_or(d)
+    };
+    let icao = json
+        .get("periodic_icao")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().chars().filter(|c| c.is_ascii_alphanumeric()).take(4).collect::<String>().to_uppercase())
+        .unwrap_or(cur.periodic_icao.clone());
+
+    let ov = WxRuntimeOverride {
+        enabled: as_bool(&json, "enabled", cur.enabled),
+        service_issi: as_u32(&json, "service_issi", cur.service_issi),
+        periodic_enabled: as_bool(&json, "periodic_enabled", cur.periodic_enabled),
+        periodic_issi: as_u32(&json, "periodic_issi", cur.periodic_issi),
+        periodic_is_group: as_bool(&json, "periodic_is_group", cur.periodic_is_group),
+        periodic_icao: icao,
+        periodic_interval_secs: as_u64(&json, "periodic_interval_secs", cur.periodic_interval_secs),
+    };
+
+    // 1) Apply at runtime.
+    {
+        let mut state = cfg.state_write();
+        state.wx_override = Some(ov.clone());
+    }
+
+    // 2) Persist to TOML.
+    if let Err(e) = crate::net_dashboard::wx_service::write_wx_to_toml(config_path, &ov) {
+        tracing::warn!("Dashboard: WX applied at runtime but failed to persist to TOML: {}", e);
+        http_response(stream, 200, "Applied at runtime; failed to write config file (check permissions)");
+        return;
+    }
+
+    tracing::info!(
+        "Dashboard: WX service updated (enabled={} svc_issi={} periodic={} -> {} icao={})",
+        ov.enabled, ov.service_issi, ov.periodic_enabled, ov.periodic_issi, ov.periodic_icao
+    );
+    http_response(stream, 200, "OK");
 }
 
 fn serve_system_info(mut stream: TcpStream, config_path: &str) {

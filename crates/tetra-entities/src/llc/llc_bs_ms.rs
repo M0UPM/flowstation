@@ -619,7 +619,13 @@ impl Llc {
         // Remove any expired entries
         if let Some(removals) = removals {
             for ssi in removals {
-                let ack = self.take_expected_ack_for_ssi(ssi).unwrap(); // Never fails
+                // ssi was just collected from expected_acks above, so the entry exists.
+                // Use if-let rather than unwrap so a future refactor of the collection
+                // logic can't panic the LLC worker here.
+                let Some(ack) = self.take_expected_ack_for_ssi(ssi) else {
+                    tracing::debug!("schedule_retransmissions: expected ACK for SSI {} already gone, skipping", ssi);
+                    continue;
+                };
                 tracing::warn!(
                     "schedule_retransmissions: SSI {} N(S) {} exhausted retransmissions",
                     ack.addr.ssi,

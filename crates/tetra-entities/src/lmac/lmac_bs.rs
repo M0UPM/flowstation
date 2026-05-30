@@ -165,10 +165,22 @@ impl LmacBs {
                             LogicalChannel::Stch
                         }
                     }
-                    _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+                    other => {
+                        // Demodulator can classify a NUB with an unexpected training
+                        // sequence (Seq3/Sync/NotFound) on a noisy or colliding signal.
+                        // Treat as SchHu and let higher-layer CRC reject it, rather than
+                        // unreachable!()-panicking on wire-derived data.
+                        tracing::warn!("LMAC: NUB with unexpected train_type {:?}, treating as SchHu", other);
+                        LogicalChannel::SchHu
+                    }
                 }
             }
-            _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+            other => {
+                // Any burst type other than CUB/NUB reaching UL classification is
+                // unexpected (SDB is downlink). Drop-safe: treat as SchHu so CRC rejects.
+                tracing::warn!("LMAC: unexpected UL burst_type {:?}, treating as SchHu", other);
+                LogicalChannel::SchHu
+            }
         }
     }
 
@@ -209,15 +221,24 @@ impl LmacBs {
     }
 
     fn rx_blk_control(&mut self, queue: &mut MessageQueue, blk: TpUnitdataInd, lchan: LogicalChannel) {
-        if !lchan.is_control_channel() {
-            tracing::warn!("LMAC: rx_blk_control called with non-signalling channel {:?}, ignoring", lchan);
+        // AACH is a control channel but uses a completely different decode path
+        // (decode_aach); decode_cp() below explicitly rejects it. Guard here so a future
+        // routing change that sends AACH this way logs and drops instead of panicking.
+        if !lchan.is_control_channel() || lchan == LogicalChannel::Aach {
+            tracing::warn!("LMAC: rx_blk_control called with unsupported channel {:?}, ignoring", lchan);
             return;
         }
 
         let block_num = blk.block_num;
         let rssi_dbfs = blk.rssi_dbfs;
         let (type1bits, crc_pass) = errorcontrol::decode_cp(lchan, blk, Some(self.scrambling_code));
-        let type1bits = type1bits.unwrap(); // Guaranteed since scramb code set
+        // decode_cp only returns None when no scrambling code is available; we always pass
+        // Some() here, so this is guaranteed. Use let-else instead of unwrap to stay
+        // panic-free if that contract ever changes.
+        let Some(type1bits) = type1bits else {
+            tracing::warn!("LMAC: decode_cp returned None for {:?} despite scrambling code set, dropping", lchan);
+            return;
+        };
 
         // tracing::debug!("rx_blk_cp {:?} CRC: {} type1 {:?}",
         //     lchan,
@@ -446,10 +467,9 @@ impl TetraEntityTrait for LmacBs {
             Sap::TmvSap => {
                 self.rx_tmv_prim(queue, message);
             }
-            // Sap::Control => {
-            //     self.rx_control(queue, message);
-            // }
-            _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+            other => {
+                tracing::error!("LMAC: unexpected SAP {:?} -- routing error, dropping", other);
+            }
         }
     }
 

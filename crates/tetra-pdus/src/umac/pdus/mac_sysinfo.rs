@@ -93,7 +93,11 @@ impl MacSysinfo {
         }
 
         let bits = buf.read_field(2, "option_field")?;
-        s.option_field = SysinfoOptFieldFlag::try_from(bits).unwrap(); // always works
+        // 2-bit field fully covered by SysinfoOptFieldFlag; propagate rather than unwrap.
+        s.option_field = SysinfoOptFieldFlag::try_from(bits).map_err(|_| PduParseErr::InvalidValue {
+            field: "option_field",
+            value: bits,
+        })?;
 
         match s.option_field {
             SysinfoOptFieldFlag::EvenMfDefForTsMode => {

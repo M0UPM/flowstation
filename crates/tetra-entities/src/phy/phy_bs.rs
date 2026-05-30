@@ -101,40 +101,66 @@ impl<D: RxTxDev> PhyBs<D> {
 
     fn split_rxslot_and_send_to_lmac(queue: &mut MessageQueue, burst: &RxBurstBits<'_>) {
         let train_seq = burst.train_type;
-        let rssi = burst.rssi_dbfs;
         match train_seq {
             TrainingSequence::NormalTrainSeq1 => {
-                assert!(burst.bits.len() == NUB_BITS);
+                // burst.bits is a variable-length slice from the demodulator. A length
+                // mismatch (DSP glitch, misconfiguration) would otherwise panic on the
+                // slice index below — drop and log instead so the cell survives.
+                if burst.bits.len() != NUB_BITS {
+                    tracing::warn!(
+                        "PHY: NUB burst wrong length ({} != {}), dropping",
+                        burst.bits.len(), NUB_BITS
+                    );
+                    return;
+                }
 
                 let mut blk = BitBuffer::new(NUB_BLK_BITS * 2);
                 blk.copy_bits_from_bitarr(&burst.bits[NUB_BLK1_OFFSET..NUB_BLK1_OFFSET + NUB_BLK_BITS]);
                 blk.copy_bits_from_bitarr(&burst.bits[NUB_BLK2_OFFSET..NUB_BLK2_OFFSET + NUB_BLK_BITS]);
                 blk.seek(0);
 
-                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::NUB, PhyBlockType::NUB, PhyBlockNum::Both, blk, rssi);
+                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::NUB, PhyBlockType::NUB, PhyBlockNum::Both, blk, burst.rssi_dbfs);
             }
 
             TrainingSequence::NormalTrainSeq2 => {
-                assert!(burst.bits.len() == NUB_BITS);
+                if burst.bits.len() != NUB_BITS {
+                    tracing::warn!(
+                        "PHY: NUB burst wrong length ({} != {}), dropping",
+                        burst.bits.len(), NUB_BITS
+                    );
+                    return;
+                }
 
                 let blk1 = BitBuffer::from_bitarr(&burst.bits[NUB_BLK1_OFFSET..NUB_BLK1_OFFSET + NUB_BLK_BITS]);
                 let blk2 = BitBuffer::from_bitarr(&burst.bits[NUB_BLK2_OFFSET..NUB_BLK2_OFFSET + NUB_BLK_BITS]);
 
-                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::NUB, PhyBlockType::NUB, PhyBlockNum::Block1, blk1, rssi);
-                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::NUB, PhyBlockType::NUB, PhyBlockNum::Block2, blk2, rssi);
+                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::NUB, PhyBlockType::NUB, PhyBlockNum::Block1, blk1, burst.rssi_dbfs);
+                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::NUB, PhyBlockType::NUB, PhyBlockNum::Block2, blk2, burst.rssi_dbfs);
             }
             TrainingSequence::ExtendedTrainSeq => {
-                assert!(burst.bits.len() == CUB_BITS);
+                if burst.bits.len() != CUB_BITS {
+                    tracing::warn!(
+                        "PHY: CUB burst wrong length ({} != {}), dropping",
+                        burst.bits.len(), CUB_BITS
+                    );
+                    return;
+                }
 
                 let mut blk = BitBuffer::new(CUB_BLK_BITS * 2);
                 blk.copy_bits_from_bitarr(&burst.bits[CUB_BLK1_OFFSET..CUB_BLK1_OFFSET + CUB_BLK_BITS]);
                 blk.copy_bits_from_bitarr(&burst.bits[CUB_BLK2_OFFSET..CUB_BLK2_OFFSET + CUB_BLK_BITS]);
                 blk.seek(0);
 
-                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::CUB, PhyBlockType::SSN1, PhyBlockNum::Block1, blk, rssi);
+                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::CUB, PhyBlockType::SSN1, PhyBlockNum::Block1, blk, burst.rssi_dbfs);
             }
 
-            _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+            // SyncTrainSeq, NormalTrainSeq3 and NotFound are not handled here (sync bursts
+            // are processed elsewhere; NotFound is filtered by the caller). A real demod
+            // can legitimately classify a burst as SyncTrainSeq, so this must NOT be an
+            // unreachable!()/panic — drop and log instead.
+            other => {
+                tracing::debug!("PHY: training sequence {:?} not handled in split_rxslot, dropping", other);
+            }
         }
     }
 

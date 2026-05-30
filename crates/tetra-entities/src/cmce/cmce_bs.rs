@@ -46,6 +46,15 @@ impl CmceBs {
         self.dashboard_control = Some(endpoint);
     }
 
+    /// Wire the control-command sender used by the built-in WX/METAR service to deliver
+    /// replies (it re-injects SendSds commands from its background fetch thread).
+    pub fn set_wx_cmd_sender(
+        &mut self,
+        tx: crossbeam_channel::Sender<ControlCommand>,
+    ) {
+        self.sds.set_wx_cmd_sender(tx);
+    }
+
     fn do_control_command(
         sds: &mut SdsBsSubentity,
         cc: &mut CcBsSubentity,
@@ -210,6 +219,7 @@ impl TetraEntityTrait for CmceBs {
 
     fn tick_start(&mut self, queue: &mut MessageQueue, ts: TdmaTime) {
         self.sds.tick_start(queue, ts);
+        self.sds.tick_periodic_wx();
         let call_events = self.cc.tick_start_with_events(queue, ts);
         if let Some(sink) = &self.telemetry {
             for event in call_events { sink.send(event); }
@@ -237,6 +247,7 @@ impl TetraEntityTrait for CmceBs {
                 }
             }
         }
+
     }
 
     fn rx_prim(&mut self, queue: &mut MessageQueue, message: SapMsg) {

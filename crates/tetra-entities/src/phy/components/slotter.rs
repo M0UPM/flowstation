@@ -105,8 +105,18 @@ fn compute_phase_adj_bits(window: &[u8], pan: PhaseAdjustBits) -> [u8; 2] {
     // sum from symbol index (n1-1) to (n2-1), inclusive
     let sum = sum_up_phase(window, (n1 - 1) as usize, (n2 - n1 + 1) as usize);
     let adj = calc_phase_adj(sum);
-    // look up bits:
-    let bits = PHASE2BITS.iter().find(|&&(ph, _)| ph as i32 == adj).unwrap().1;
+    // look up bits. PHASE2BITS only contains the odd phase-adjustment values (±1, ±3)
+    // plus 0; per TETRA the even values (±2) shouldn't be produced by calc_phase_adj.
+    // If a sum ever maps to one anyway, fall back to "no adjustment" ([0,0]) and warn
+    // rather than unwrap-panicking on the TX path (a crash here would kill the cell on
+    // every sync burst).
+    let bits = match PHASE2BITS.iter().find(|&&(ph, _)| ph as i32 == adj) {
+        Some(&(_, b)) => b,
+        None => {
+            tracing::warn!("slotter: phase adjustment {} has no bit mapping, using no-adjust", adj);
+            [0, 0]
+        }
+    };
 
     bits
 }

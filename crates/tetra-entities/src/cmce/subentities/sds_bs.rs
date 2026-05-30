@@ -35,6 +35,13 @@ pub struct SdsBsSubentity {
     sds_broadcast_sender: HomeModeDisplaySender,
     live_sds_sender: HomeModeDisplaySender,
     pub pending_actions: Vec<SdsPendingAction>,
+    /// Control-command sender used to re-inject WX/METAR replies into the stack from the
+    /// background fetch thread. Cloned from the CMCE command dispatcher at startup. When
+    /// None (no control links), the WX responder still works for nothing — replies need
+    /// this channel — so it is wired in main.rs alongside the dashboard sender.
+    wx_cmd_tx: Option<crossbeam_channel::Sender<ControlCommand>>,
+    /// Monotonic timestamp of the last periodic WX auto-send, to rate-limit the broadcast.
+    last_periodic_wx: Option<std::time::Instant>,
 }
 
 impl SdsBsSubentity {
@@ -46,11 +53,21 @@ impl SdsBsSubentity {
             sds_broadcast_sender: HomeModeDisplaySender::new(),
             live_sds_sender: HomeModeDisplaySender::new(),
             pending_actions: Vec::new(),
+            wx_cmd_tx: None,
+            last_periodic_wx: None,
         }
     }
 
     pub fn set_telemetry(&mut self, sink: TelemetrySink) {
         self.telemetry = Some(sink);
+    }
+
+    /// Provide the control-command sender used to deliver WX/METAR replies.
+    pub fn set_wx_cmd_sender(
+        &mut self,
+        tx: crossbeam_channel::Sender<ControlCommand>,
+    ) {
+        self.wx_cmd_tx = Some(tx);
     }
 
     pub fn shared_config(&self) -> &SharedConfig {
@@ -115,6 +132,39 @@ impl SdsBsSubentity {
             dest_ssi,
             pdu.user_defined_data.type_identifier()
         );
+
+        // Built-in WX/METAR service: if this SDS is addressed to the configured service
+        // ISSI and the responder is enabled, treat the text as a weather command, fetch
+        // asynchronously, and reply to the sender. Consumed locally (not routed onward).
+        let wx = self.config.effective_wx_service();
+        if wx.enabled && dest_ssi == wx.service_issi {
+            // An SDS-TL SHORT REPORT / STATUS (PID 0x82/0x89, message-type byte 0x10) is a
+            // delivery confirmation for a reply we already sent — never a fresh request.
+            // Feeding it back into the responder produced an infinite SDS storm: each reply
+            // requests a delivery report, the terminal returns one, and its message-reference
+            // byte decoded as a single-character "command" that triggered yet another reply.
+            // tetraflow-sds-bot guards against this in handle_downlink_sds / parse_text_payload
+            // by rejecting data[1] == 0x10; mirror that here and absorb the report.
+            if Self::is_sds_tl_report(&pdu.user_defined_data) {
+                tracing::debug!(
+                    "SDS: absorbing SDS-TL delivery report to WX service from ISSI {}",
+                    source_ssi
+                );
+                return;
+            }
+            // Delivery confirmation, identical to tetraflow-sds-bot's queue_u_status: before
+            // answering, send an SDS-TL SHORT REPORT back to the requester so the terminal
+            // marks its outgoing message as delivered. The report echoes the request's
+            // message-reference byte and carries [0x82, 0x10, 0x00, MR], from the service
+            // ISSI to the requester.
+            if let Some(mr) = Self::sds_tl_message_reference(&pdu.user_defined_data) {
+                let report = SdsUserData::Type4(32, vec![0x82u8, 0x10u8, 0x00u8, mr]);
+                self.send_d_sds_data(queue, wx.service_issi, source_ssi, SsiType::Issi, report);
+            }
+            self.handle_wx_request(source_ssi, &pdu.user_defined_data);
+            self.emit(TelemetryEvent::SdsActivity { source_issi: source_ssi, dest_issi: dest_ssi });
+            return;
+        }
 
         // ACKs/replies addressed to the dashboard ISSI (9999) are consumed locally.
         if dest_ssi == 9999 {
@@ -199,9 +249,16 @@ impl SdsBsSubentity {
             len_bits
         );
 
-        if !self.config.state_read().subscribers.is_registered(dest_ssi) {
-            tracing::warn!("SDS: dest ISSI {} from Control is not locally registered, dropping", dest_ssi);
-            return false;
+        // Do NOT gate RF delivery on the SDS subscriber registry. A terminal that just sent
+        // us an uplink request (e.g. the WX/METAR requester) is reachable on our air
+        // interface even when it is not in the static local-subscriber table — dropping here
+        // is exactly what swallowed the reply. Deliver D-SDS-DATA over RF to the destination
+        // regardless, the same way tetraflow-sds-bot answers the requester directly.
+        if !dest_is_group && !self.config.state_read().subscribers.is_registered(dest_ssi) {
+            tracing::debug!(
+                "SDS: dest ISSI {} from Control not in local registry; delivering over RF anyway",
+                dest_ssi
+            );
         }
 
         // SDS-TL Simple Text Message — format verificat din tetraflow-sds-bot:
@@ -375,6 +432,185 @@ impl SdsBsSubentity {
         queue.push_back(msg);
     }
 
+    // ── Built-in WX/METAR service ──────────────────────────────────────────
+    //
+    // Extract the text from an incoming SDS, parse the weather command, fetch the METAR on
+    // a background thread (network I/O must not block the stack loop), then re-inject the
+    // reply as a ControlCommand::SendSds — the same path the dashboard uses, so it lands
+    // back in rx_sds_from_control on the stack thread.
+
+    /// True when the SDS user data is an SDS-TL SHORT REPORT / STATUS PDU — i.e. a
+    /// delivery confirmation rather than a text request. Recognised as PID 0x82/0x89 with
+    /// message-type byte 0x10. Mirrors the `data[1] == 0x10` check in tetraflow-sds-bot's
+    /// `parse_text_payload` / `handle_downlink_sds`, the proven discriminator that keeps
+    /// reports out of the responder.
+    fn is_sds_tl_report(data: &SdsUserData) -> bool {
+        let bytes = data.to_arr();
+        bytes.len() >= 4 && matches!(bytes.first(), Some(0x82) | Some(0x89)) && bytes[1] == 0x10
+    }
+
+    /// Message-reference byte (data[2]) of an SDS-TL text request — PID 0x82/0x89 that is
+    /// not itself a report. Echoed back in the delivery confirmation, mirroring the
+    /// `message_reference` the bot pulls in `parse_text_payload`. `None` when there is no
+    /// usable SDS-TL header.
+    fn sds_tl_message_reference(data: &SdsUserData) -> Option<u8> {
+        let bytes = data.to_arr();
+        if bytes.len() >= 4 && matches!(bytes.first(), Some(0x82) | Some(0x89)) && bytes[1] != 0x10 {
+            Some(bytes[2])
+        } else {
+            None
+        }
+    }
+
+    /// Pull the human-readable text out of an SDS user-data field. Handles the SDS-TL
+    /// "simple text" wrapper (PID 0x82/0x80/0x8A, msg-type byte, message-ref, encoding,
+    /// then text) as well as raw text payloads. Returns an ASCII string (best-effort).
+    fn extract_sds_text(data: &SdsUserData) -> String {
+        let bytes = data.to_arr();
+        if bytes.is_empty() {
+            return String::new();
+        }
+        // SDS-TL text messaging PIDs: 0x82 (text), 0x80/0x8A (text w/ variants). When the
+        // first byte looks like one of these and there is a 4-byte header, skip it.
+        let payload: &[u8] = match bytes.first() {
+            Some(0x82) | Some(0x80) | Some(0x8A) if bytes.len() > 4 => &bytes[4..],
+            // Some terminals send a bare text-coding-scheme byte (0x01..=0x03) then text.
+            Some(0x01..=0x03) if bytes.len() > 1 => &bytes[1..],
+            _ => &bytes[..],
+        };
+        payload
+            .iter()
+            .filter(|&&b| b == b'\t' || (0x20..=0x7E).contains(&b))
+            .map(|&b| b as char)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    /// Handle a weather request SDS addressed to the service ISSI. Spawns a worker that
+    /// fetches the METAR and sends the reply back to `requester_issi`.
+    fn handle_wx_request(&self, requester_issi: u32, data: &SdsUserData) {
+        use crate::net_dashboard::wx_service::{self, WxRequest};
+
+        let text = Self::extract_sds_text(data);
+        tracing::info!("WX: request from ISSI {}: {:?}", requester_issi, text);
+
+        let Some(tx) = self.wx_cmd_tx.clone() else {
+            tracing::warn!("WX: no control sender wired, cannot reply to {}", requester_issi);
+            return;
+        };
+        let service_issi = self.config.effective_wx_service().service_issi;
+
+        // Only two commands exist: METAR (aviationweather) and WX (wttr.in). Anything else is
+        // not a command and gets no reply. Both do blocking network I/O, so each runs on a
+        // worker thread and re-injects its reply via the control channel.
+        let Some(request) = wx_service::parse_wx_request(&text) else {
+            tracing::debug!(
+                "WX: ignoring non-command SDS from ISSI {} (only METAR/WX): {:?}",
+                requester_issi, text
+            );
+            return;
+        };
+
+        std::thread::Builder::new()
+            .name("wx-fetch".into())
+            .spawn(move || {
+                let reply = match request {
+                    WxRequest::Metar(icao) => match wx_service::fetch_metar_decoded(&icao) {
+                        Ok(decoded) if !decoded.is_empty() => decoded,
+                        Ok(_) => format!("{icao}: no data"),
+                        Err(e) => {
+                            tracing::warn!("WX: METAR fetch {} failed: {}", icao, e);
+                            format!("{icao}: unavailable")
+                        }
+                    },
+                    WxRequest::Wx(loc) => match wx_service::fetch_wx(&loc) {
+                        Ok(decoded) if !decoded.is_empty() => decoded,
+                        Ok(_) => format!("{loc}: no data"),
+                        Err(e) => {
+                            tracing::warn!("WX: wttr fetch {} failed: {}", loc, e);
+                            format!("{loc}: unavailable")
+                        }
+                    },
+                };
+                Self::queue_wx_reply(&tx, service_issi, requester_issi, &reply);
+            })
+            .ok();
+    }
+
+    /// Build a SendSds control command carrying `text` and push it onto the control queue.
+    /// `payload` here is the bare text; rx_sds_from_control wraps it in the SDS-TL header.
+    fn queue_wx_reply(
+        tx: &crossbeam_channel::Sender<ControlCommand>,
+        source_issi: u32,
+        dest_issi: u32,
+        text: &str,
+    ) {
+        // TETRA SDS-TL simple text is length-limited; trim to a safe size.
+        let mut payload: Vec<u8> = text.bytes().take(220).collect();
+        if payload.is_empty() {
+            payload = b"(no data)".to_vec();
+        }
+        let len_bits = (payload.len() * 8) as u16;
+        let cmd = ControlCommand::SendSds {
+            handle: 0,
+            source_ssi: source_issi,
+            dest_ssi: dest_issi,
+            dest_is_group: false,
+            len_bits,
+            payload,
+        };
+        if tx.send(cmd).is_err() {
+            tracing::warn!("WX: failed to enqueue reply to ISSI {}", dest_issi);
+        }
+    }
+
+    /// Called every tick. When periodic WX is enabled and the interval has elapsed, fetch
+    /// the configured station's METAR and send it to the configured destination.
+    pub fn tick_periodic_wx(&mut self) {
+        let wx = self.config.effective_wx_service();
+        if !wx.periodic_enabled || wx.periodic_issi == 0 || wx.periodic_icao.trim().is_empty() {
+            return;
+        }
+        let interval = std::time::Duration::from_secs(wx.effective_interval_secs());
+        let due = match self.last_periodic_wx {
+            None => true,
+            Some(t) => t.elapsed() >= interval,
+        };
+        if !due {
+            return;
+        }
+        self.last_periodic_wx = Some(std::time::Instant::now());
+
+        let Some(tx) = self.wx_cmd_tx.clone() else { return; };
+        let icao = wx.periodic_icao.clone();
+        let dest = wx.periodic_issi;
+        let is_group = wx.periodic_is_group;
+        let source_issi = wx.service_issi;
+
+        std::thread::Builder::new()
+            .name("wx-periodic".into())
+            .spawn(move || {
+                use crate::net_dashboard::wx_service;
+                        let reply = match wx_service::fetch_metar_decoded(&icao) {
+                    Ok(d) if !d.is_empty() => d,
+                    _ => return, // skip this cycle on failure; try again next interval
+                };
+                let payload: Vec<u8> = reply.bytes().take(220).collect();
+                let len_bits = (payload.len() * 8) as u16;
+                let cmd = ControlCommand::SendSds {
+                    handle: 0,
+                    source_ssi: source_issi,
+                    dest_ssi: dest,
+                    dest_is_group: is_group,
+                    len_bits,
+                    payload,
+                };
+                let _ = tx.send(cmd);
+            })
+            .ok();
+    }
+
     /// Build and send a D-SDS-DATA PDU to a local MS
     fn send_d_sds_data(
         &self,
@@ -405,8 +641,9 @@ impl SdsBsSubentity {
         let dest_addr = TetraAddress::new(dest_ssi, dest_ssi_type);
         let layer2service = match dest_ssi_type {
             SsiType::Issi => Layer2Service::Acknowledged,
-            SsiType::Gssi => Layer2Service::Unacknowledged,
-            _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+            // Group and anything else: unacknowledged. All current callers pass Issi or
+            // Gssi; default the rest to Unacknowledged rather than unreachable!()-panic.
+            _ => Layer2Service::Unacknowledged,
         };
         let msg = SapMsg {
             sap: Sap::LcmcSap,

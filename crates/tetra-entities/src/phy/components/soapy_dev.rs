@@ -87,7 +87,24 @@ impl RxTxDevSoapySdr {
             ..Default::default()
         };
 
-        let mut sdr = soapyio::SoapyIo::new(cfg).unwrap();
+        let mut sdr = match soapyio::SoapyIo::new(cfg) {
+            Ok(sdr) => sdr,
+            Err(e) => {
+                // Failing to open the SDR at boot is fatal — there's nothing to transmit
+                // on. A panic here is acceptable (and systemd will retry), but the default
+                // .unwrap() message ("called Result::unwrap() on an Err...soapy_dev.rs:90")
+                // tells the operator nothing. Surface the actual cause and the usual
+                // culprits so log-only debugging is possible.
+                tracing::error!(
+                    "Failed to open SDR device: {}. Check that the SDR is plugged in, \
+                     not held by another process (SoapySDRUtil/GQRX/another bluestation-bs), \
+                     and that the device driver in [phy_io.soapysdr] matches the hardware. \
+                     Cannot start without a radio.",
+                    e
+                );
+                panic!("Failed to open SDR device: {e}");
+            }
+        };
 
         let health_telemetry = telemetry.clone();
 

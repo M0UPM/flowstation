@@ -124,6 +124,23 @@ impl SubscriberRegistry {
     }
 }
 
+/// Runtime override for the built-in WX/METAR service, edited from the dashboard.
+///
+/// Mirrors the editable subset of `[wx_service]` config. When `Some`, it takes precedence
+/// over the config so toggles/edits apply immediately without a restart; the dashboard
+/// also writes the new values back to the TOML so they persist. `None` means "no override
+/// — use the config value".
+#[derive(Debug, Clone, Default)]
+pub struct WxRuntimeOverride {
+    pub enabled: bool,
+    pub service_issi: u32,
+    pub periodic_enabled: bool,
+    pub periodic_issi: u32,
+    pub periodic_is_group: bool,
+    pub periodic_icao: String,
+    pub periodic_interval_secs: u64,
+}
+
 /// Mutable, stack-editable state (mutex-protected).
 #[derive(Debug, Clone)]
 pub struct StackState {
@@ -137,6 +154,15 @@ pub struct StackState {
     pub live_sds_queue: VecDeque<LiveSdsMessage>,
     /// Monotonically incrementing ID counter for live SDS messages.
     pub next_live_sds_id: u32,
+    /// Runtime ISSI whitelist override edited from the dashboard. When `Some`, it takes
+    /// precedence over the config file's `[security] issi_whitelist` so changes apply
+    /// immediately without a restart. An empty Vec here means "open network" (all ISSIs
+    /// allowed), exactly like an empty whitelist in config. `None` means "no override —
+    /// fall back to the config value". The dashboard also writes the new list back to the
+    /// TOML so it survives a restart.
+    pub issi_whitelist_override: Option<Vec<u32>>,
+    /// Runtime override for the WX/METAR service (dashboard toggle). See WxRuntimeOverride.
+    pub wx_override: Option<WxRuntimeOverride>,
 }
 
 #[cfg(test)]
@@ -232,6 +258,8 @@ impl Default for StackState {
             subscribers: SubscriberRegistry::new(),
             live_sds_queue: VecDeque::new(),
             next_live_sds_id: 1,
+            issi_whitelist_override: None,
+            wx_override: None,
         }
     }
 }

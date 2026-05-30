@@ -266,6 +266,29 @@ voice_service = true
 
 ###############################################################################
 
+# OPTIONAL: Built-in WX/METAR SDS service (FlowStation)
+#
+# A weather responder that runs inside FlowStation — no external bot needed.
+#
+#   On-demand:  a radio sends an SDS like "METAR LROP" (or "WX LROP", or just "LROP")
+#               to service_issi and receives a decoded, ASCII report back.
+#   Periodic:   FlowStation auto-sends a fixed station's METAR to periodic_issi every
+#               periodic_interval_secs (minimum 300 s).
+#
+# Everything here can also be toggled/edited live from the dashboard (Config page),
+# which writes the values back to this section.
+#
+# [wx_service]
+# enabled = true                 # master on/off for the on-demand responder
+# service_issi = 9998            # ISSI that radios address to request weather
+# periodic_enabled = false       # auto-broadcast a fixed station periodically
+# periodic_issi = 1001           # destination (ISSI, or a GSSI if periodic_is_group)
+# periodic_is_group = false      # true = periodic_issi is a talkgroup (GSSI)
+# periodic_icao = "LROP"         # station whose METAR is auto-sent
+# periodic_interval_secs = 1800  # send period in seconds (>= 300)
+
+###############################################################################
+
 # OPTIONAL: Web dashboard — accessible at http://<BTS-IP>:8080 (FlowStation)
 #
 # Live view of terminals, active calls, log, config editor, kick and SDS.

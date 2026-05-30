@@ -181,7 +181,12 @@ fn build_bs_stack(cfg: &mut SharedConfig) -> (MessageRouter, Option<TelemetrySou
     let mle = MleBs::new(cfg.clone());
     let mm = MmBs::new(cfg.clone(), tsink.clone(), c_e.remove(&TetraEntity::Mm));
     let sndcp = Sndcp::new(cfg.clone());
-    let cmce = CmceBs::new(cfg.clone(), tsink.clone(), c_e.remove(&TetraEntity::Cmce));
+    let mut cmce = CmceBs::new(cfg.clone(), tsink.clone(), c_e.remove(&TetraEntity::Cmce));
+    // Wire the built-in WX/METAR service's reply channel: its background fetch threads
+    // re-inject SendSds commands through the CMCE command dispatcher, same as the dashboard.
+    if let Some(d) = c_d.get(&TetraEntity::Cmce) {
+        cmce.set_wx_cmd_sender(d.clone_sender());
+    }
     router.register_entity(Box::new(lmac));
     router.register_entity(Box::new(umac));
     router.register_entity(Box::new(llc));

@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::sync::{Arc, RwLock};
 use tetra_core::freqs::FreqInfo;
 
-use crate::bluestation::{CfgCellInfo, CfgControl, CfgNetInfo, CfgPhyIo, CfgSecurity, PhyBackend, StackState};
+use crate::bluestation::{CfgCellInfo, CfgControl, CfgNetInfo, CfgPhyIo, CfgSecurity, CfgWxService, PhyBackend, StackState};
 
 use super::sec_dashboard::CfgDashboard;
 use super::sec_brew::CfgBrew;
@@ -82,6 +82,9 @@ pub struct StackConfig {
 
     /// Access control / security configuration
     pub security: CfgSecurity,
+
+    /// Built-in WX/METAR SDS service configuration
+    pub wx_service: CfgWxService,
 }
 
 impl StackConfig {
@@ -241,5 +244,25 @@ impl SharedConfig {
     /// Write guard for mutable state.
     pub fn state_write(&self) -> std::sync::RwLockWriteGuard<'_, StackState> {
         self.state.write().expect("StackState RwLock blocked")
+    }
+
+    /// Effective WX/METAR service settings: the dashboard runtime override if present,
+    /// otherwise the config file values. Returns an owned CfgWxService so callers don't
+    /// hold the state lock.
+    pub fn effective_wx_service(&self) -> crate::bluestation::CfgWxService {
+        let base = self.cfg.wx_service.clone();
+        if let Some(o) = self.state_read().wx_override.as_ref() {
+            crate::bluestation::CfgWxService {
+                enabled: o.enabled,
+                service_issi: o.service_issi,
+                periodic_enabled: o.periodic_enabled,
+                periodic_issi: o.periodic_issi,
+                periodic_is_group: o.periodic_is_group,
+                periodic_icao: o.periodic_icao.clone(),
+                periodic_interval_secs: o.periodic_interval_secs,
+            }
+        } else {
+            base
+        }
     }
 }

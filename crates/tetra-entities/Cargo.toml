@@ -30,3 +30,7 @@ md5 = "0.7"
 base64 = "0.22"
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
+# HTTP client for the dashboard's GitHub update-check and the built-in WX/METAR service.
+# rustls-tls (no OpenSSL) keeps cross-compilation to the Pi simple; blocking is fine since
+# both uses run on their own short-lived threads.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }

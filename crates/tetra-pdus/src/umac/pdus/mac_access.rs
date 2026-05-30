@@ -80,7 +80,12 @@ impl MacAccess {
             } else {
                 let frag = buf.read_field(1, "frag_flag")? != 0;
                 let val = buf.read_field(4, "reservation_req")?;
-                let res_req = ReservationRequirement::try_from(val).unwrap(); // Never fails
+                // 4-bit field, ReservationRequirement covers all 16 values. Propagate
+                // instead of unwrap to stay panic-free on any future change.
+                let res_req = ReservationRequirement::try_from(val).map_err(|_| PduParseErr::InvalidValue {
+                    field: "reservation_req",
+                    value: val,
+                })?;
                 (None, Some(frag), Some(res_req))
             }
         } else {

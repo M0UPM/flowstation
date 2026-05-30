@@ -13,6 +13,7 @@ use super::config::{StackConfig, StackMode};
 use super::sec_brew::{CfgBrewDto, apply_brew_patch};
 use super::sec_dashboard::{CfgDashboardDto, apply_dashboard_patch};
 use super::sec_security::{CfgSecurityDto, apply_security_patch};
+use super::sec_wx::{CfgWxServiceDto, apply_wx_service_patch};
 use super::sec_telemetry::{CfgTelemetryDto, apply_telemetry_patch};
 use super::{PhyIoDto, phy_dto_to_cfg};
 
@@ -150,6 +151,7 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
         telemetry: None,
         control: None,
         security: apply_security_patch(root.security.unwrap_or_default()),
+        wx_service: apply_wx_service_patch(root.wx_service.unwrap_or_default()),
     };
 
     if let Some(brew) = root.brew {
@@ -212,6 +214,8 @@ struct TomlConfigRoot {
     telemetry: Option<CfgTelemetryDto>,
     command: Option<CfgControlDto>,
     security: Option<CfgSecurityDto>,
+    #[serde(rename = "wx_service")]
+    wx_service: Option<CfgWxServiceDto>,
 
     #[serde(flatten)]
     extra: HashMap<String, Value>,

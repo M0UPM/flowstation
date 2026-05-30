@@ -947,7 +947,7 @@ impl BrewEntity {
     }
 
     /// Handle NetworkCallReady response from CMCE
-    fn rx_network_call_ready(&mut self, brew_uuid: Uuid, call_id: u16, ts: u8, usage: u8) {
+    fn rx_network_call_ready(&mut self, queue: &mut MessageQueue, brew_uuid: Uuid, call_id: u16, ts: u8, usage: u8) {
         tracing::info!(
             "BrewEntity: network call ready uuid={} call_id={} ts={} usage={}",
             brew_uuid,
@@ -962,7 +962,22 @@ impl BrewEntity {
             call.ts = Some(ts);
             call.usage = Some(usage);
         } else {
-            tracing::warn!("BrewEntity: NetworkCallReady for unknown uuid={}", brew_uuid);
+            // Race: CMCE finished allocating a circuit (call_id/ts/usage) for a call that
+            // Brew has already torn down — e.g. a GROUP_IDLE or disconnect arrived between
+            // our NetworkCallStart and this NetworkCallReady. If we just drop this on the
+            // floor, CMCE keeps the circuit allocated forever (orphaned ts/usage that no
+            // GROUP_IDLE will ever release). Tell CMCE to release it so the timeslot is
+            // freed for the next call.
+            tracing::warn!(
+                "BrewEntity: NetworkCallReady for unknown uuid={} (call already gone) — releasing orphaned circuit call_id={} ts={}",
+                brew_uuid, call_id, ts
+            );
+            queue.push_back(SapMsg {
+                sap: Sap::Control,
+                src: TetraEntity::Brew,
+                dest: TetraEntity::Cmce,
+                msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid }),
+            });
         }
     }
 
@@ -1047,7 +1062,7 @@ impl TetraEntityTrait for BrewEntity {
         self.expire_hanging_calls(queue);
     }
 
-    fn rx_prim(&mut self, _queue: &mut MessageQueue, message: SapMsg) {
+    fn rx_prim(&mut self, queue: &mut MessageQueue, message: SapMsg) {
         match message.msg {
             // UL voice from UMAC — forward to TetraPack if this timeslot is being forwarded
             SapMsgInner::TmdCircuitDataInd(prim) => {
@@ -1077,7 +1092,7 @@ impl TetraEntityTrait for BrewEntity {
                 ts,
                 usage,
             }) => {
-                self.rx_network_call_ready(brew_uuid, call_id, ts, usage);
+                self.rx_network_call_ready(queue, brew_uuid, call_id, ts, usage);
             }
             // UlInactivityTimeout is UMAC→CMCE only; Brew handles FloorReleased instead
             SapMsgInner::CmceCallControl(CallControl::UlInactivityTimeout { .. }) => {}

@@ -3,7 +3,7 @@ use crate::net_telemetry::channel::TelemetrySink;
 use crate::{MessageQueue, TetraEntityTrait, net_brew};
 use tetra_config::bluestation::SharedConfig;
 use tetra_core::tetra_entities::TetraEntity;
-use tetra_core::{BitBuffer, Layer2Service, Sap, TdmaTime, TetraAddress, assert_warn, unimplemented_log};
+use tetra_core::{BitBuffer, Layer2Service, Sap, TdmaTime, TetraAddress, unimplemented_log};
 use tetra_saps::control::brew::{BrewSubscriberAction, MmSubscriberUpdate};
 use tetra_saps::lmm::LmmMleUnitdataReq;
 use tetra_saps::{SapMsg, SapMsgInner};
@@ -288,8 +288,18 @@ impl MmBs {
         let issi = prim.received_address.ssi;
         let handle = prim.handle;
 
-        // ISSI whitelist check — reject if whitelist is non-empty and ISSI not in it
-        if !self.config.config().security.is_issi_allowed(issi) {
+        // ISSI whitelist check — reject if whitelist is non-empty and ISSI not in it.
+        // The dashboard can override the config whitelist at runtime (state override takes
+        // precedence so edits apply without a restart); fall back to the config value when
+        // no override is set. An empty list (in either place) means "open network".
+        let issi_allowed = {
+            let state = self.config.state_read();
+            match &state.issi_whitelist_override {
+                Some(list) => list.is_empty() || list.contains(&issi),
+                None => self.config.config().security.is_issi_allowed(issi),
+            }
+        };
+        if !issi_allowed {
             tracing::warn!("MM: ISSI {} not in whitelist, rejecting registration", issi);
             Self::send_d_location_update_reject(
                 queue,
@@ -454,6 +464,44 @@ impl MmBs {
             None
         };
 
+        // Coverage-return re-affiliation (fixes "PTT no longer works after leaving and
+        // returning to coverage", workaround = DMO→TMO).
+        //
+        // Sequence that breaks PTT:
+        //   1. MS affiliates to a GSSI → CMCE group_listeners[gssi] += 1. PTT works.
+        //   2. MS leaves coverage; BS T351 expires and emits Deregister to CMCE, which
+        //      does dec_group_listener() → the GSSI now has 0 listeners.
+        //   3. MS returns. Because we hand out attachment_lifetime=0 (persistent), the MS
+        //      believes it is still affiliated and sends a plain location update WITHOUT a
+        //      group identity report.
+        //   4. MM re-registers the MS but never re-affiliates the groups → CMCE still has
+        //      0 listeners for the GSSI → the next PTT is rejected with "no listeners"
+        //      ("please wait" on the radio). DMO→TMO forces an ItsiAttach with a full group
+        //      report, which is why that clears it.
+        //
+        // Fix: when a *known* MS re-registers without supplying a group report, but we
+        // still hold groups for it in client_mgr, re-emit Affiliate for those groups so
+        // CMCE's group_listeners (and Brew) are resynced with what the MS believes.
+        if !is_new && !_has_groups {
+            let stored_groups: Vec<u32> = self.client_mgr
+                .get_client_by_issi(issi)
+                .map(|c| c.groups.iter().copied().collect())
+                .unwrap_or_default();
+            if !stored_groups.is_empty() {
+                tracing::info!(
+                    "MM: ISSI {} re-registered without group report but has {} stored group(s) {:?} — re-affiliating to resync CMCE/Brew (coverage-return fix)",
+                    issi, stored_groups.len(), stored_groups
+                );
+                {
+                    let mut state = self.config.state_write();
+                    for &gssi in &stored_groups {
+                        state.subscribers.affiliate(issi, gssi);
+                    }
+                }
+                self.emit_subscriber_update(queue, issi, stored_groups, BrewSubscriberAction::Affiliate);
+            }
+        }
+
         // Store and log class_of_ms
         if let Some(ref class) = pdu.class_of_ms {
             tracing::info!("MS {} class_of_ms: {}", issi, class);
@@ -530,56 +578,32 @@ impl MmBs {
         };
         queue.push_back(msg);
 
-        // Decide whether to send D-LOCATION-UPDATE-COMMAND, which prompts the MS to
-        // re-send a full demand including TEI/class-of-MS and a group identity report.
+        // Send D-LOCATION-UPDATE-COMMAND to prompt a full re-registration (TEI + group
+        // identity report) ONLY for a genuinely new (unknown) radio that didn't ITSI-attach
+        // and didn't already include a group report.
         //
-        // Per ETSI EN 300 392-2 §16.9.3.4 note 2: if the MS omits "class of MS" (or
-        // extended capabilities) and the SwMI needs it, the SwMI may accept and then
-        // send a D-LOCATION-UPDATE-COMMAND.
-        //
-        // History / tension between terminal vendors:
-        //  - Motorola MTM800/MXP600 respond to a COMMAND on a *roaming* update with yet
-        //    another RoamingLocationUpdating (not DemandLocationUpdating). If we always
-        //    sent COMMAND on roaming this produced needs_cleanup → Deregister → is_new
-        //    again, i.e. an infinite registration loop. So historically we only sent
-        //    COMMAND on a genuine first attach (is_new && !is_roaming).
-        //  - But the Motorola TPG2200 *pager* comes up (power-on, DMO→TMO) with a
-        //    RoamingLocationUpdating that carries NO group identity report and we have no
-        //    stored groups for it. Without a COMMAND it never reports its groups, so it
-        //    stays unaffiliated and shows "Unit Not Attached" until kicked (FH-BUG-027).
-        //
-        // Resolution: send COMMAND when the MS is genuinely new, OR when it has provided
-        // no groups *and* we hold no groups for it yet — regardless of roaming. The
-        // anti-loop guard is pending_command_sent: once we've sent a COMMAND we don't
-        // send another until the MS completes registration (which clears the flag), so a
-        // Motorola handset that answers a COMMAND with RoamingLocationUpdating won't be
-        // sent a second COMMAND and can't loop.
-        let is_roaming = pdu.location_update_type == LocationUpdateType::RoamingLocationUpdating
-            || pdu.location_update_type == LocationUpdateType::ServiceRestorationRoamingLocationUpdating;
-        let has_stored_groups = self.client_mgr
-            .get_client_by_issi(issi)
-            .map(|c| !c.groups.is_empty())
-            .unwrap_or(false);
-        let needs_group_report = !_has_groups && !has_stored_groups;
-        // Anti-loop guard: was_pending was captured at the top of this handler, BEFORE
-        // reset_registration_timer() cleared the flag. If we had already sent a COMMAND in
-        // the previous cycle and the MS is only now answering, was_pending is true and we
-        // must not send another COMMAND — this is exactly the Motorola handset case that
-        // would otherwise loop.
-        let send_command = !was_pending
-            && ((is_new && !is_roaming) || needs_group_report);
-
-        if send_command {
+        // This mirrors BlueStation's behaviour and is deliberately narrow:
+        //  - A new radio doing RoamingLocationUpdating without groups gets exactly one
+        //    COMMAND so it re-registers with its group list.
+        //  - A radio we ALREADY know never gets a COMMAND here. This is critical for
+        //    receive-only devices like the Motorola TPG2200 pager, which never report any
+        //    talkgroups: keying COMMAND at them on every update made them answer with yet
+        //    another group-less RoamingLocationUpdating, producing an endless COMMAND loop
+        //    and a permanent "Unit Not Attached" that even a kick couldn't clear (regression
+        //    fixed here).
+        //  - Motorola handsets (MTM800/MXP600) that answer a COMMAND with another
+        //    RoamingLocationUpdating are now known on that second update, so they get no
+        //    further COMMAND and can't loop.
+        let has_groups = _has_groups;
+        if is_new
+            && pdu.location_update_type != LocationUpdateType::ItsiAttach
+            && !has_groups
+        {
             tracing::info!(
-                "Sending D-LOCATION UPDATE COMMAND to MS {} (is_new={} roaming={} needs_group_report={})",
-                issi, is_new, is_roaming, needs_group_report
+                "Sending D-LOCATION UPDATE COMMAND to returning MS {} to request group report",
+                issi
             );
             Self::send_d_location_update_command(queue, issi, handle);
-            // Mark so we don't re-issue a COMMAND (and risk a Motorola loop) before the
-            // MS has had a chance to complete this registration cycle. grace = periodic
-            // interval if configured, else a short fixed window.
-            let grace = self.config.config().cell.periodic_registration_secs.max(30);
-            self.client_mgr.set_pending_command(issi, grace);
         }
     }
 
@@ -677,7 +701,12 @@ impl MmBs {
                 unimplemented_log!("{:?}", pdu.status_uplink)
             }
             _ => {
-                assert_warn!(false, "Unrecognized UMmStatus type {:?}", pdu.status_uplink);
+                // Status types we don't handle (e.g. NetworkOrUserSpecific*, reserved
+                // values). This is a valid-but-unsupported PDU, not a code bug, so log it
+                // as unimplemented rather than asserting — assert_warn made it look like
+                // an internal fault in the operator's logs. handled stays false, so we
+                // still reply with "function not supported" below.
+                unimplemented_log!("Unhandled UMmStatus type {:?}", pdu.status_uplink);
             }
         }
 

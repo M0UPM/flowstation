@@ -1034,8 +1034,16 @@ impl BsChannelScheduler {
         }
 
         // Map 1-based ts to 0-based index, bail on 0 or out of range.
+        // (ts.t should always be 1..=4, but guard rather than unwrap so a bad ts can't
+        // panic the scheduler.)
+        if ts.t < 1 || (ts.t as usize) > self.dltx_queues.len() {
+            tracing::warn!("dl_take_prioritized_sched_item: ts.t={} out of range, no item", ts.t);
+            return None;
+        }
         let slot = ts.t as usize - 1;
-        let q = self.dltx_queues.get_mut(slot).unwrap();
+        let Some(q) = self.dltx_queues.get_mut(slot) else {
+            return None;
+        };
 
         // Return grants first
         if let Some(i) = q.iter().position(|e| matches!(e, DlSchedElem::Grant(..))) {

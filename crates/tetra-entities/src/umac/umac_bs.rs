@@ -123,7 +123,11 @@ impl UmacBs {
         let sysinfo1 = MacSysinfo {
             main_carrier: c.cell.main_carrier,
             freq_band: c.cell.freq_band,
-            freq_offset_index: FreqInfo::freq_offset_hz_to_id(c.cell.freq_offset_hz).unwrap(),
+            freq_offset_index: FreqInfo::freq_offset_hz_to_id(c.cell.freq_offset_hz)
+                .unwrap_or_else(|| panic!(
+                    "Invalid [cell] freq_offset_hz = {} Hz. TETRA only allows 0, +6250, -6250, or +12500 Hz (ETSI freq offset IDs). Fix the config.",
+                    c.cell.freq_offset_hz
+                )),
             duplex_spacing: c.cell.duplex_spacing_id,
             reverse_operation: c.cell.reverse_operation,
             num_of_csch: 0, // Common secondary control channels
@@ -285,26 +289,34 @@ impl UmacBs {
 
         match prim.logical_channel {
             LogicalChannel::SchF => {
-                // Full slot signalling
-                assert!(
-                    prim.block_num == PhyBlockNum::Both,
-                    "{:?} can't have block_num {:?}",
-                    prim.logical_channel,
-                    prim.block_num
-                );
+                // Full slot signalling — must be a full block. A mismatched block_num
+                // would indicate a PHY/LMAC routing problem; drop and log instead of
+                // asserting so a single odd block can't take down the cell.
+                if prim.block_num != PhyBlockNum::Both {
+                    tracing::warn!(
+                        "rx_tmv_unitdata_ind: {:?} with unexpected block_num {:?}, dropping",
+                        prim.logical_channel, prim.block_num
+                    );
+                    return;
+                }
                 self.rx_tmv_sch(queue, message);
             }
             LogicalChannel::Stch | LogicalChannel::SchHu => {
                 // Half slot signalling
-                assert!(
-                    matches!(prim.block_num, PhyBlockNum::Block1 | PhyBlockNum::Block2),
-                    "{:?} can't have block_num {:?}",
-                    prim.logical_channel,
-                    prim.block_num
-                );
+                if !matches!(prim.block_num, PhyBlockNum::Block1 | PhyBlockNum::Block2) {
+                    tracing::warn!(
+                        "rx_tmv_unitdata_ind: {:?} with unexpected block_num {:?}, dropping",
+                        prim.logical_channel, prim.block_num
+                    );
+                    return;
+                }
                 self.rx_tmv_sch(queue, message);
             }
-            _ => unreachable!("invalid channel: {:?}", prim.logical_channel),
+            // Any other logical channel reaching here is a routing error. Log and drop
+            // rather than unreachable!()-panicking on wire-derived data.
+            other => {
+                tracing::warn!("rx_tmv_unitdata_ind: unhandled logical channel {:?}, dropping", other);
+            }
         }
     }
 
