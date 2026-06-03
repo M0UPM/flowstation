@@ -6,6 +6,8 @@ use tetra_pdus::cmce::enums::short_report_type::ShortReportType;
 use tetra_saps::control::enums::sds_user_data::SdsUserData;
 use tetra_saps::control::sds::CmceSdsData;
 use tetra_saps::lcmc::LcmcMleUnitdataReq;
+use tetra_saps::lcmc::enums::{alloc_type::ChanAllocType, ul_dl_assignment::UlDlAssignment};
+use tetra_saps::lcmc::fields::chan_alloc_req::CmceChanAllocReq;
 use tetra_saps::{SapMsg, SapMsgInner};
 
 use tetra_pdus::cmce::enums::party_type_identifier::PartyTypeIdentifier;
@@ -645,6 +647,54 @@ impl SdsBsSubentity {
             // Gssi; default the rest to Unacknowledged rather than unreachable!()-panic.
             _ => Layer2Service::Unacknowledged,
         };
+
+        // ETSI EN 300 392-2 §23.5: an MS engaged in a call follows the associated control
+        // channel (FACCH) on its assigned traffic timeslot and is NOT listening to the MCCH.
+        // So if the destination is currently on a traffic channel, deliver the SDS by stealing
+        // a half-slot on that timeslot; otherwise send on the MCCH as before. Without this, SDS
+        // sent while a call is up are never received. The map is rebuilt from live call state
+        // every tick, so it cannot point at a stale/closed circuit.
+        let traffic = {
+            let state = self.config.state_read();
+            state.active_call_ts.get(&dest_ssi).copied().or_else(|| {
+                // Individual SDS to an MS that is a member of an active group call: reach it on
+                // that group's traffic timeslot.
+                if dest_ssi_type == SsiType::Issi {
+                    state
+                        .subscribers
+                        .attached_groups_of(dest_ssi)
+                        .into_iter()
+                        .find_map(|gssi| state.active_call_ts.get(&gssi).copied())
+                } else {
+                    None
+                }
+            })
+        };
+
+        let (stealing_permission, chan_alloc) = match traffic {
+            Some((ts, usage)) if (1..=4).contains(&ts) => {
+                let mut timeslots = [false; 4];
+                timeslots[(ts - 1) as usize] = true;
+                tracing::debug!(
+                    "SDS: dest {} is on traffic ts {} — delivering via FACCH stealing",
+                    dest_ssi,
+                    ts
+                );
+                (
+                    true,
+                    Some(CmceChanAllocReq {
+                        usage: Some(usage),
+                        carrier: None,
+                        timeslots,
+                        alloc_type: ChanAllocType::Replace,
+                        ul_dl_assigned: UlDlAssignment::Dl,
+                    }),
+                )
+            }
+            // Idle destination (or no active call): MCCH, exactly as before.
+            _ => (false, None),
+        };
+
         let msg = SapMsg {
             sap: Sap::LcmcSap,
             src: TetraEntity::Cmce,
@@ -657,9 +707,9 @@ impl SdsBsSubentity {
                 layer2service,
                 pdu_prio: 0,
                 layer2_qos: 0,
-                stealing_permission: false,
+                stealing_permission,
                 stealing_repeats_flag: false,
-                chan_alloc: None,
+                chan_alloc,
                 main_address: dest_addr,
                 tx_reporter: None,
             }),

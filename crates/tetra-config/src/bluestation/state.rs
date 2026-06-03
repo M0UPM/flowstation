@@ -122,6 +122,16 @@ impl SubscriberRegistry {
     pub fn all_registered_issis(&self) -> impl Iterator<Item = u32> + '_ {
         self.subscribers.keys().copied()
     }
+
+    /// Groups the given ISSI is currently affiliated to (empty if not registered).
+    /// Used by the SDS path to reach a member of an active group call on the group's
+    /// traffic timeslot.
+    pub fn attached_groups_of(&self, issi: u32) -> Vec<u32> {
+        self.subscribers
+            .get(&issi)
+            .map(|s| s.attached_groups.iter().copied().collect())
+            .unwrap_or_default()
+    }
 }
 
 /// Runtime override for the built-in WX/METAR service, edited from the dashboard.
@@ -163,6 +173,14 @@ pub struct StackState {
     pub issi_whitelist_override: Option<Vec<u32>>,
     /// Runtime override for the WX/METAR service (dashboard toggle). See WxRuntimeOverride.
     pub wx_override: Option<WxRuntimeOverride>,
+    /// Live map "identity currently reachable on a traffic channel" → (DL timeslot, usage_marker),
+    /// republished every tick by CMCE call control from the live call tables (so it is never
+    /// stale). Keyed by GSSI for active group calls and by each participant ISSI for connected
+    /// individual calls. The SDS path uses it to steal a FACCH half-slot on the right timeslot
+    /// so it can reach an MS engaged in a call, which is NOT listening to the MCCH
+    /// (ETSI EN 300 392-2 §23.5). Empty when no calls are active, so idle delivery stays on
+    /// the MCCH exactly as before.
+    pub active_call_ts: std::collections::HashMap<u32, (u8, u8)>,
 }
 
 #[cfg(test)]
@@ -260,6 +278,7 @@ impl Default for StackState {
             next_live_sds_id: 1,
             issi_whitelist_override: None,
             wx_override: None,
+            active_call_ts: std::collections::HashMap::new(),
         }
     }
 }

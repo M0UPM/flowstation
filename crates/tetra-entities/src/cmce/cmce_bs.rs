@@ -221,6 +221,8 @@ impl TetraEntityTrait for CmceBs {
         self.sds.tick_start(queue, ts);
         self.sds.tick_periodic_wx();
         let call_events = self.cc.tick_start_with_events(queue, ts);
+        // Refresh the "who is on a traffic channel" map so SDS can FACCH-steal to MSs in a call.
+        self.cc.publish_active_call_ts();
         if let Some(sink) = &self.telemetry {
             for event in call_events { sink.send(event); }
         }

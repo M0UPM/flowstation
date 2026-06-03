@@ -1174,8 +1174,17 @@ impl TetraEntityTrait for BrewEntity {
                 }
             }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitRelease { brew_uuid, cause }) => {
-                let was_active = self.drop_network_circuit(brew_uuid);
-                if was_active && self.connected {
+                // Always clean up any local media / jitter / UL-forward state for this circuit.
+                self.drop_network_circuit(brew_uuid);
+                // Forward the release to the Core whenever we are connected — NOT only when
+                // the circuit had become "active". A call that was set up but never answered
+                // was already announced to the Core via SendSetupRequest, yet it never reached
+                // the active state (no connect/media), so `drop_network_circuit` reports
+                // was_active = false. Gating the wire release on that meant FlowStation never
+                // told the Core to tear the pending call down, leaking a hanging call on the
+                // network. Sending unconditionally (like Setup/Reject/Alert do) fixes it; the
+                // Core harmlessly ignores a release for a uuid it has already released.
+                if self.connected {
                     let _ = self.command_sender.send(BrewCommand::SendCallRelease { uuid: brew_uuid, cause });
                 }
             }

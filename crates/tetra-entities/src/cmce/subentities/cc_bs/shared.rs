@@ -198,7 +198,20 @@ impl CcBsSubentity {
     }
 
     pub(super) fn has_listener(&self, gssi: u32) -> bool {
-        self.group_listeners.get(&gssi).copied().unwrap_or(0) > 0
+        // Authoritative listener check: a group has a local listener iff some registered
+        // subscriber is currently affiliated to it. We derive this directly from the
+        // affiliation set (`subscriber_groups`) — the source of truth maintained by MM
+        // register/affiliate/deaffiliate/deregister — instead of the separate, delta-
+        // maintained `group_listeners` counter.
+        //
+        // The counter could drift to 0 while the MS was still affiliated (e.g. after a
+        // re-registration following a brief RF loss): the MM "coverage-return" re-affiliate
+        // re-adds the group to the set, but the Affiliate handler only increments the counter
+        // on a *new* set insertion, so a group already present never got its count restored.
+        // That left an affiliated MS with a 0 count → its next group PTT was wrongly rejected
+        // with "no listeners" ("PTT denied"). Deriving the decision from set membership makes
+        // that impossible: if the MS is affiliated, PTT is granted — period.
+        self.subscriber_groups.values().any(|set| set.contains(&gssi))
     }
 
     pub(super) fn inc_group_listener(&mut self, gssi: u32) {
@@ -991,6 +1004,28 @@ impl CcBsSubentity {
         self.emit(crate::net_telemetry::TelemetryEvent::IndividualCallEnded { call_id });
         // Clean up echo session if this was the echo call
         self.release_echo_session_if_matches(call_id);
+    }
+
+    /// Publish the live "identity on a traffic channel → (timeslot, usage_marker)" map into
+    /// shared state so the SDS path can FACCH-steal to an MS engaged in a call instead of
+    /// sending on the MCCH it is no longer monitoring (ETSI EN 300 392-2 §23.5). Rebuilt from
+    /// the live call tables every tick, so it can never reference a stale/closed circuit.
+    pub(crate) fn publish_active_call_ts(&self) {
+        use std::collections::HashMap;
+        let mut map: HashMap<u32, (u8, u8)> = HashMap::new();
+        // Group calls: every affiliated member is camped on the group's assigned traffic slot.
+        for call in self.active_calls.values() {
+            map.insert(call.dest_gssi, (call.ts, call.usage));
+        }
+        // Individual calls: only once connected (Active) are the parties on a traffic channel.
+        // During setup/alerting they are still reachable on the MCCH, so leave them out.
+        for call in self.individual_calls.values() {
+            if call.is_active() {
+                map.insert(call.calling_addr.ssi, (call.calling_ts, call.calling_usage));
+                map.insert(call.called_addr.ssi, (call.called_ts, call.called_usage));
+            }
+        }
+        self.config.state_write().active_call_ts = map;
     }
 
     pub(super) fn release_timeslot(&mut self, ts: u8) {
