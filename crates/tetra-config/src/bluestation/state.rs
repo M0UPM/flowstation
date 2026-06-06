@@ -42,6 +42,12 @@ pub struct SubscriberRegistry {
     all_attached_groups: HashSet<u32>,
 }
 
+impl Default for SubscriberRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SubscriberRegistry {
     pub fn new() -> Self {
         Self {

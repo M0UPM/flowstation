@@ -105,18 +105,16 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
     }
 
     // Optional brew section
-    if let Some(ref brew) = root.brew {
-        if !brew.extra.is_empty() {
+    if let Some(ref brew) = root.brew
+        && !brew.extra.is_empty() {
             return Err(format!("Unrecognized fields in brew config: {:?}", sorted_keys(&brew.extra)).into());
         }
-    }
 
     // Optional telemetry section
-    if let Some(ref telemetry) = root.telemetry {
-        if !telemetry.extra.is_empty() {
+    if let Some(ref telemetry) = root.telemetry
+        && !telemetry.extra.is_empty() {
             return Err(format!("Unrecognized fields in telemetry config: {:?}", sorted_keys(&telemetry.extra)).into());
         }
-    }
 
     // Build cell config, then inject the separately-parsed neighbor cells and sds_command_control
     let mut cell_cfg = cell_dto_to_cfg(root.cell_info);
@@ -243,6 +241,7 @@ main_carrier = 1584
 freq_band = 4
 freq_offset = 0
 duplex_spacing = 4
+reverse_operation = false
 location_area = 1
 {}
 "#,

@@ -14,3 +14,6 @@ git-version = "0.3.9"
 const_format = "0.2.35"
 chrono = { workspace = true }
 chrono-tz = "0.10"
+
+[lints]
+workspace = true

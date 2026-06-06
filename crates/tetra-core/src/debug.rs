@@ -283,11 +283,7 @@ pub fn setup_logging_verbose() {
 /// Returns guards that must be kept alive for logging to continue working
 pub fn setup_logging_default(verbose_logfile: Option<String>) -> Option<LogGuards> {
     let stdout_filter = get_default_stdout_filter();
-    let logfile_and_filter = if let Some(file) = verbose_logfile {
-        Some((file, get_default_logfile_filter()))
-    } else {
-        None
-    };
+    let logfile_and_filter = verbose_logfile.map(|file| (file, get_default_logfile_filter()));
     setup_logging(stdout_filter, logfile_and_filter)
 }
 
@@ -338,6 +334,9 @@ fn setup_logging(stdout_filter: EnvFilter, outfile: Option<(String, EnvFilter)>)
         let file = OpenOptions::new()
             .create(true)
             .write(true)
+            // Start each run with a fresh log rather than overwriting in place (which would
+            // leave stale tail bytes when the previous run's log was longer).
+            .truncate(true)
             .open(outfile)
             .expect("Failed to open log file");
         let (file_writer, file_guard) = tracing_appender::non_blocking(file);

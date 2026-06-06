@@ -88,10 +88,7 @@ impl ULocationUpdateDemand {
         let class_of_ms = typed::parse_type2_struct(obit, buffer, ClassOfMs::from_bitbuf)?;
         // Type2
         let val = typed::parse_type2_generic(obit, buffer, 3, "energy_saving_mode")?;
-        let energy_saving_mode = match val {
-            Some(v) => Some(EnergySavingMode::try_from(v).unwrap()), // Never fails
-            None => None,
-        };
+        let energy_saving_mode = val.map(|v| EnergySavingMode::try_from(v).unwrap());
         // Type2
         let la_information = typed::parse_type2_generic(obit, buffer, 15, "la_information")?;
         let la_information = match la_information {

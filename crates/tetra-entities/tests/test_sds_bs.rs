@@ -98,12 +98,11 @@ fn test_sds_local_delivery() {
 
     // Verify the address is ISSI
     for m in &sink_msgs {
-        if m.dest == TetraEntity::Mle {
-            if let SapMsgInner::LcmcMleUnitdataReq(ref prim) = m.msg {
+        if m.dest == TetraEntity::Mle
+            && let SapMsgInner::LcmcMleUnitdataReq(ref prim) = m.msg {
                 assert_eq!(prim.main_address.ssi, 2000001);
                 assert_eq!(prim.main_address.ssi_type, SsiType::Issi);
             }
-        }
     }
 }
 
@@ -122,6 +121,7 @@ fn test_sds_brew_forward() {
         reconnect_delay: Duration::from_secs(1),
         jitter_initial_latency_frames: 0,
         feature_sds_enabled: true,
+        feature_rssi_export: false,
         whitelisted_ssis: None,
     });
     let mut test = ComponentTest::from_config(config, Some(dltime));
@@ -236,12 +236,11 @@ fn test_sds_group_delivery() {
 
     // Verify the address is GSSI
     for m in &sink_msgs {
-        if m.dest == TetraEntity::Mle {
-            if let SapMsgInner::LcmcMleUnitdataReq(ref prim) = m.msg {
+        if m.dest == TetraEntity::Mle
+            && let SapMsgInner::LcmcMleUnitdataReq(ref prim) = m.msg {
                 assert_eq!(prim.main_address.ssi, gssi);
                 assert_eq!(prim.main_address.ssi_type, SsiType::Gssi);
             }
-        }
     }
 }
 
@@ -267,7 +266,7 @@ fn test_u_status_forwarded_as_d_status() {
         called_party_short_number_address: None,
         called_party_ssi: Some(2000001),
         called_party_extension: None,
-        pre_coded_status: PreCodedStatus::try_from(0x8210).unwrap(),
+        pre_coded_status: PreCodedStatus::from(0x8210),
         external_subscriber_number: None,
         dm_ms_address: None,
     };
@@ -324,6 +323,7 @@ fn test_u_status_brew_forward() {
         reconnect_delay: Duration::from_secs(1),
         jitter_initial_latency_frames: 0,
         feature_sds_enabled: true,
+        feature_rssi_export: false,
         whitelisted_ssis: None,
     });
     let mut test = ComponentTest::from_config(config, Some(dltime));

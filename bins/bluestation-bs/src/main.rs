@@ -1,5 +1,4 @@
 use clap::Parser;
-use crossbeam_channel;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -353,7 +352,7 @@ fn main() {
                         match telemetry_source.recv() {
                             Some(event) => {
                                 dash_clone.handle_telemetry(event.clone());
-                                let _ = tee_sink.send(event);
+                                tee_sink.send(event);
                             }
                             None => break,
                         }

@@ -1936,6 +1936,8 @@ const LANGS={
     fallback_title:'⚠ FALLBACK CONFIG ACTIVE — Primary config failed to load',
     sds_msg_label:'Message',cancel:'Cancel',send:'Send',
     th_issi:'ISSI',th_groups:'Groups',th_ee:'EE',th_signal:'Signal',
+    tg_selected:'Selected talkgroup (last keyed up)',tg_scan_hint:'Scanned/affiliated talkgroups — selected one is marked ▶',
+    tg_affiliated_short:'affiliated',tg_affiliated_hint:'Other talkgroups this radio is affiliated to (kept attached on the BS even when scan is off on the device)',
     th_status:'Status',th_last_seen:'Last seen',th_actions:'Actions',
     th_id:'ID',th_type:'Type',th_caller:'Caller',
     th_dest:'Destination',th_speaker:'Speaker',th_duration:'Duration',
@@ -2005,6 +2007,8 @@ const LANGS={
     sds_title:'⬡ Trimite Mesaj SDS',sds_dest:'ISSI Destinatar',
     sds_msg_label:'Mesaj',cancel:'Anulează',send:'Trimite',
     th_issi:'ISSI',th_groups:'Grupuri',th_ee:'EE',th_signal:'Semnal',
+    tg_selected:'Grup selectat (ultima transmisie)',tg_scan_hint:'Grupuri scanate/afiliate — cel selectat este marcat cu ▶',
+    tg_affiliated_short:'afiliate',tg_affiliated_hint:'Alte grupuri la care radio-ul este afiliat (rămân atașate la BS chiar și când scan e oprit din statie)',
     th_status:'Status',th_last_seen:'Văzut',th_actions:'Acțiuni',
     th_id:'ID',th_type:'Tip',th_caller:'Apelant',
     th_dest:'Destinatar',th_speaker:'Vorbitor',th_duration:'Durată',
@@ -2759,7 +2763,13 @@ function handleMsg(msg){
     case 'brew_status':
       setBrewStatus(!!msg.connected,msg.brew_version||0);break;
     case 'ms_registered':
-      state.ms[msg.issi]=Object.assign({issi:msg.issi,groups:[],rssi_dbfs:null,energy_saving_mode:0},state.ms[msg.issi]||{},{issi:msg.issi,_last_seen_ts:Date.now()});
+      // Defaults include selected_group:null so a re-register event doesn't strip the
+      // property off an existing entry (Object.assign with a defaults object that omits the
+      // key would otherwise just leave whatever was there — that part is fine — but freshly
+      // registered entries must have a defined-but-null selected_group so the equality
+      // comparison `g === sel` in renderStations behaves consistently with the server-side
+      // None initialiser in server.rs.
+      state.ms[msg.issi]=Object.assign({issi:msg.issi,groups:[],selected_group:null,rssi_dbfs:null,energy_saving_mode:0},state.ms[msg.issi]||{},{issi:msg.issi,_last_seen_ts:Date.now()});
       renderStations();break;
     case 'ms_deregistered':
       delete state.ms[msg.issi];renderStations();break;
@@ -2770,13 +2780,26 @@ function handleMsg(msg){
       if(state.ms[msg.issi]){const cur=new Set(state.ms[msg.issi].groups||[]);(msg.groups||[]).forEach(g=>cur.add(g));state.ms[msg.issi].groups=[...cur];}
       renderStations();break;
     case 'ms_groups_detach':
-      if(state.ms[msg.issi]){const rem=new Set(msg.groups||[]);state.ms[msg.issi].groups=(state.ms[msg.issi].groups||[]).filter(g=>!rem.has(g));}
+      if(state.ms[msg.issi]){
+        const rem=new Set(msg.groups||[]);
+        state.ms[msg.issi].groups=(state.ms[msg.issi].groups||[]).filter(g=>!rem.has(g));
+        // Drop a stale selected_group pointer if the detach removed the actively-selected TG.
+        if(state.ms[msg.issi].selected_group!=null&&rem.has(state.ms[msg.issi].selected_group))state.ms[msg.issi].selected_group=null;
+      }
       renderStations();break;
     case 'ms_groups_all':
-      if(state.ms[msg.issi])state.ms[msg.issi].groups=msg.groups||[];
+      if(state.ms[msg.issi]){
+        state.ms[msg.issi].groups=msg.groups||[];
+        // Drop selected_group if it's no longer in the affiliated list (e.g. scan list rebuild,
+        // or all detached). Keeps the data model and the visible state consistent.
+        const sg=state.ms[msg.issi].selected_group;
+        if(sg!=null&&!(state.ms[msg.issi].groups||[]).includes(sg))state.ms[msg.issi].selected_group=null;
+      }
       renderStations();break;
     case 'call_started':
       state.calls[msg.call_id]={...msg,started_at:Date.now()};
+      // The caller keyed up on this GSSI → it's their actively-selected TG.
+      if(msg.call_type==='group'&&msg.gssi!=null&&state.ms[msg.caller_issi]){state.ms[msg.caller_issi].selected_group=msg.gssi;renderStations();}
       if(msg.last_heard)pushLastHeard(msg.last_heard);
       if(msg.ts&&msg.ts>=2){
         const lbl=msg.call_type==='group'?`GSSI ${msg.gssi}`:(msg.called_issi?`ISSI ${msg.called_issi}`:'P2P');
@@ -2792,6 +2815,9 @@ function handleMsg(msg){
       tsVoice(msg.ts);break;
     case 'speaker_changed':
       if(state.calls[msg.call_id])state.calls[msg.call_id].active_speaker=msg.speaker_issi;
+      // The new speaker has this call's GSSI selected (looked up from the active call).
+      {const sg=state.calls[msg.call_id]&&state.calls[msg.call_id].gssi;
+       if(sg!=null&&state.ms[msg.speaker_issi]){state.ms[msg.speaker_issi].selected_group=sg;renderStations();}}
       if(msg.last_heard){pushLastHeard(msg.last_heard);renderLastHeard();}
       renderCalls();break;
     case 'ms_energy_saving':
@@ -2956,11 +2982,34 @@ function renderStations(){
   tb.innerHTML=ms.sort((a,b)=>a.issi-b.issi).map(m=>{
     const r=m.rssi_dbfs,rL=r!=null?`${r.toFixed(1)} dBFS`:'—',pct=rssiPct(r),col=rssiColor(r);
     let grps;
-    if((m.groups||[]).length>1){
-      const gList=(m.groups||[]).map(g=>`<span class="badge badge-dim" style="font-size:9px">${g}</span>`).join(' ');
-      grps=`<span class="badge" style="background:rgba(255,165,0,0.15);color:#ffaa00;border-color:rgba(255,165,0,0.4);font-weight:700;font-size:9px;margin-right:4px">⚡ SCAN</span>${gList}`;
-    } else if((m.groups||[]).length===1){
-      grps=`<span class="badge badge-blue">${m.groups[0]}</span>`;
+    const gl=m.groups||[],sel=m.selected_group;
+    // The selected/active TG (the one the MS last keyed up on) is rendered as a solid blue
+    // badge with a ▶ marker; the merely scanned/affiliated TGs are dim. Until the MS is heard
+    // on a call sel is null — so right after a restart all groups show dim (scanned), without
+    // implying the station is actively on any of them.
+    const gBadge=g=>g===sel
+      ?`<span class="badge badge-blue" style="font-weight:700;font-size:9px" title="${t('tg_selected')}">▶ ${g}</span>`
+      :`<span class="badge badge-dim" style="font-size:9px">${g}</span>`;
+    if(gl.length>1){
+      const gList=gl.slice().sort((a,b)=>(b===sel)-(a===sel)||a-b).map(gBadge).join(' ');
+      // When we know which TG is selected, show a neutral "+N afiliate" badge instead of
+      // "⚡ SCAN". The user perceives "SCAN" as a live statement about the radio scanning,
+      // but on the BS side we have no signal for that — only the static set of affiliated
+      // groups (which the radio keeps re-attaching with lifetime=0 even after scan is
+      // turned off locally). Saying "+N afiliate" is honest: these N groups are affiliated
+      // alongside the selected one. The orange "⚡ SCAN" label is kept only when we have
+      // no selected TG yet (e.g. just after a restart and before any PTT) — there the
+      // operator-facing distinction between selected and scanned is genuinely unknown.
+      let extraBadge;
+      if(sel!=null){
+        const others=gl.filter(g=>g!==sel).length;
+        extraBadge=`<span class="badge badge-dim" style="font-size:9px;margin-right:4px" title="${t('tg_affiliated_hint')}">+${others} ${t('tg_affiliated_short')}</span>`;
+      } else {
+        extraBadge=`<span class="badge" style="background:rgba(255,165,0,0.15);color:#ffaa00;border-color:rgba(255,165,0,0.4);font-weight:700;font-size:9px;margin-right:4px" title="${t('tg_scan_hint')}">⚡ SCAN</span>`;
+      }
+      grps=`${extraBadge}${gList}`;
+    } else if(gl.length===1){
+      grps=`<span class="badge badge-blue">${gl[0]}</span>`;
     } else {
       grps='<span class="badge badge-dim">—</span>';
     }

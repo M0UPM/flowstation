@@ -108,6 +108,10 @@ impl DqpskMapper {
         // to constellation points. Generated in Python with:
         // import numpy as np
         // print(",\n".join("ComplexSample{ re: %9.6f, im: %9.6f }" % (v.real, v.imag) for v in np.exp(1j*np.linspace(0, np.pi*2, 8, endpoint=False))))
+        // The 0.707107 entries are the π/4-DQPSK diagonal constellation points (= 1/√2).
+        // Kept as the exact literals emitted by the Python generator above rather than
+        // f32::consts::FRAC_1_SQRT_2, so the table matches the documented source verbatim.
+        #[allow(clippy::approx_constant)]
         const CONSTELLATION: [ComplexSample; 8] = [
             ComplexSample {
                 re: 1.000000,

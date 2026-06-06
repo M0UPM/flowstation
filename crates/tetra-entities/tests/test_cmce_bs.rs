@@ -98,15 +98,12 @@ fn build_u_setup_msg(calling_issi: u32, dest_gssi: u32) -> SapMsg {
 fn extract_d_setup_reporters(msgs: &mut Vec<SapMsg>) -> Vec<tetra_core::TxReporter> {
     let mut reporters = vec![];
     for msg in msgs.iter_mut() {
-        if msg.dest == TetraEntity::Mle {
-            if let SapMsgInner::LcmcMleUnitdataReq(ref mut prim) = msg.msg {
-                if prim.chan_alloc.as_ref().is_some_and(|ca| ca.usage.is_some()) {
-                    if let Some(reporter) = prim.tx_reporter.take() {
+        if msg.dest == TetraEntity::Mle
+            && let SapMsgInner::LcmcMleUnitdataReq(ref mut prim) = msg.msg
+                && prim.chan_alloc.as_ref().is_some_and(|ca| ca.usage.is_some())
+                    && let Some(reporter) = prim.tx_reporter.take() {
                         reporters.push(reporter);
                     }
-                }
-            }
-        }
     }
     reporters
 }
@@ -125,6 +122,14 @@ fn count_d_setups(msgs: &[SapMsg]) -> usize {
 /// Test that late-entry D-SETUP re-sends are throttled when the previous
 /// D-SETUP's TxReceipt is still in Pending state (UMAC hasn't transmitted it yet),
 /// and that they resume once the receipt reaches a final state.
+///
+/// IGNORED: this covers a receipt-based throttle that no longer exists. `circuit_mgr`
+/// now resends late-entry D-SETUP on a fixed ~5s schedule (1 initial + 1 backup, then
+/// every LATE_ENTRY_INTERVAL) with no tx_reporter on the resends and no Pending-receipt
+/// suppression — see `circuit_mgr::tick_start` and `cc_bs::timers` (resends built with
+/// `tx_reporter = None`). The current unthrottled behaviour is intentional and verified
+/// in production. Re-enable only if receipt-based throttling is reintroduced.
+#[ignore = "throttle feature removed; late-entry D-SETUP now resends on a fixed schedule"]
 #[test]
 fn test_dsetup_late_entry_throttle() {
     debug::setup_logging_verbose();

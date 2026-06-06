@@ -77,7 +77,7 @@ impl USdsData {
             2 => SdsUserData::Type3(buffer.read_field(64, "user_defined_data_3")?),
             3 => {
                 let len_bits = buffer.read_field(11, "length_indicator")? as u16;
-                let num_bytes = (len_bits as usize + 7) / 8;
+                let num_bytes = (len_bits as usize).div_ceil(8);
                 let mut data = vec![0u8; num_bytes];
                 buffer
                     .read_bits_into_slice(len_bits as usize, &mut data)

@@ -334,6 +334,16 @@ impl CcBsSubentity {
 
         self.send_d_tx_granted_facch(queue, call_id, source_issi, dest_gssi, ts);
 
+        // Notify dashboard that the speaker on this group call changed (network/Brew origin).
+        // The local hangtime → new-speaker and queued-speaker paths already emit this; the
+        // network path did not, so the dashboard's per-call active_speaker (and the per-MS
+        // selected_group inference) never updated for Brew-originated speakers.
+        self.emit(crate::net_telemetry::TelemetryEvent::GroupCallSpeakerChanged {
+            call_id,
+            gssi: dest_gssi,
+            speaker_issi: source_issi,
+        });
+
         queue.push_back(SapMsg {
             sap: Sap::Control,
             src: TetraEntity::Cmce,

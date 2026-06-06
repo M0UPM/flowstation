@@ -24,6 +24,7 @@ fn test_in_fragmented_sch_hu_and_sch_f() {
         logical_channel: LogicalChannel::SchHu,
         crc_pass: true,
         scrambling_code: 864282631,
+        rssi_dbfs: f32::NEG_INFINITY,
     };
     let test_sapmsg1 = SapMsg {
         sap: Sap::TmvSap,
@@ -37,6 +38,7 @@ fn test_in_fragmented_sch_hu_and_sch_f() {
         logical_channel: LogicalChannel::SchF,
         crc_pass: true,
         scrambling_code: 864282631,
+        rssi_dbfs: f32::NEG_INFINITY,
     };
     let test_sapmsg2 = SapMsg {
         sap: Sap::TmvSap,
@@ -82,6 +84,7 @@ fn test_in_fragmented_sch_hu_and_sch_hu() {
         logical_channel: LogicalChannel::SchHu,
         crc_pass: true,
         scrambling_code: 864282631,
+        rssi_dbfs: f32::NEG_INFINITY,
     };
     let test_sapmsg1 = SapMsg {
         sap: Sap::TmvSap,
@@ -95,6 +98,7 @@ fn test_in_fragmented_sch_hu_and_sch_hu() {
         logical_channel: LogicalChannel::SchHu,
         crc_pass: true,
         scrambling_code: 864282631,
+        rssi_dbfs: f32::NEG_INFINITY,
     };
     let test_sapmsg2 = SapMsg {
         sap: Sap::TmvSap,

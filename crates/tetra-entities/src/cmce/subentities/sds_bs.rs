@@ -391,7 +391,16 @@ impl SdsBsSubentity {
         }
     }
 
-    /// Build and send a D-STATUS PDU to a local MS
+    /// Build and send a D-STATUS PDU to a local MS.
+    ///
+    /// Like `send_d_sds_data`, this honours ETSI EN 300 392-2 §23.5 — an MS engaged in a
+    /// call follows the FACCH on its assigned traffic timeslot and is NOT listening to the
+    /// MCCH. So if the destination is currently on a traffic channel, the D-STATUS is
+    /// delivered via half-slot stealing on that timeslot (Unacknowledged basic-link, because
+    /// the LLC acknowledged path drops stealing messages — see `llc_bs_ms::rx_tla_tldata_req_bl`).
+    /// Otherwise it goes on the MCCH as before. Without this, an in-call MS never receives
+    /// status messages and the U-STATUS feedback chain (e.g. SDS-TL delivery short reports)
+    /// silently breaks during a QSO.
     fn send_d_status(&self, queue: &mut MessageQueue, source_issi: u32, dest_issi: u32, pre_coded_status: PreCodedStatus) {
         let pdu = DStatus {
             calling_party_type_identifier: PartyTypeIdentifier::Ssi,
@@ -412,6 +421,46 @@ impl SdsBsSubentity {
         sdu.seek(0);
 
         let dest_addr = TetraAddress::new(dest_issi, SsiType::Issi);
+
+        // Same FACCH-stealing routing as send_d_sds_data: an in-call MS is on its traffic
+        // TS, not the MCCH. Reach it via stealing on that TS; the unacknowledged basic-link
+        // path forwards stealing_permission + chan_alloc straight to UMAC.
+        let traffic = {
+            let state = self.config.state_read();
+            state.active_call_ts.get(&dest_issi).copied().or_else(|| {
+                // The dest ISSI may also be a member of an active group call — reach it on
+                // the group's traffic timeslot.
+                state
+                    .subscribers
+                    .attached_groups_of(dest_issi)
+                    .into_iter()
+                    .find_map(|gssi| state.active_call_ts.get(&gssi).copied())
+            })
+        };
+
+        let (stealing_permission, chan_alloc, layer2service) = match traffic {
+            Some((ts, usage)) if (1..=4).contains(&ts) => {
+                let mut timeslots = [false; 4];
+                timeslots[(ts - 1) as usize] = true;
+                tracing::debug!(
+                    "SDS-STATUS: dest {} is on traffic ts {} — delivering D-STATUS via FACCH stealing",
+                    dest_issi, ts
+                );
+                (
+                    true,
+                    Some(CmceChanAllocReq {
+                        usage: Some(usage),
+                        carrier: None,
+                        timeslots,
+                        alloc_type: ChanAllocType::Replace,
+                        ul_dl_assigned: UlDlAssignment::Dl,
+                    }),
+                    Layer2Service::Unacknowledged,
+                )
+            }
+            _ => (false, None, Layer2Service::Todo),
+        };
+
         let msg = SapMsg {
             sap: Sap::LcmcSap,
             src: TetraEntity::Cmce,
@@ -421,12 +470,12 @@ impl SdsBsSubentity {
                 handle: 0,
                 endpoint_id: 0,
                 link_id: 0,
-                layer2service: Layer2Service::Todo,
+                layer2service,
                 pdu_prio: 0,
                 layer2_qos: 0,
-                stealing_permission: false,
+                stealing_permission,
                 stealing_repeats_flag: false,
-                chan_alloc: None,
+                chan_alloc,
                 main_address: dest_addr,
                 tx_reporter: None,
             }),
@@ -641,12 +690,6 @@ impl SdsBsSubentity {
         sdu.seek(0);
 
         let dest_addr = TetraAddress::new(dest_ssi, dest_ssi_type);
-        let layer2service = match dest_ssi_type {
-            SsiType::Issi => Layer2Service::Acknowledged,
-            // Group and anything else: unacknowledged. All current callers pass Issi or
-            // Gssi; default the rest to Unacknowledged rather than unreachable!()-panic.
-            _ => Layer2Service::Unacknowledged,
-        };
 
         // ETSI EN 300 392-2 §23.5: an MS engaged in a call follows the associated control
         // channel (FACCH) on its assigned traffic timeslot and is NOT listening to the MCCH.
@@ -693,6 +736,23 @@ impl SdsBsSubentity {
             }
             // Idle destination (or no active call): MCCH, exactly as before.
             _ => (false, None),
+        };
+
+        // Choose the LLC basic-link service. When stealing a half-slot to reach an MS that is
+        // engaged in a call, we MUST use the unacknowledged basic link: the LLC acknowledged
+        // path (rx_tla_tldata_req_bl) explicitly drops any message with stealing_permission set
+        // ("BL-DATA requested for STCH message — not supported, dropping"), so an Acknowledged
+        // SDS to an in-call MS would never be transmitted. The unacknowledged path forwards the
+        // stealing permission and chan_alloc straight down to the MAC. On the MCCH (idle dest)
+        // we keep the previous behaviour: acknowledged for individual SDS, unacknowledged for
+        // group/other addressing.
+        let layer2service = if stealing_permission {
+            Layer2Service::Unacknowledged
+        } else {
+            match dest_ssi_type {
+                SsiType::Issi => Layer2Service::Acknowledged,
+                _ => Layer2Service::Unacknowledged,
+            }
         };
 
         let msg = SapMsg {

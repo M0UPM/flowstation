@@ -58,8 +58,15 @@ pub fn parse_whitelist_body(body: &str) -> Result<Vec<u32>, String> {
 }
 
 /// Serialise a whitelist as a TOML array literal, e.g. `[1001, 1002, 1003]`.
+///
+/// The entries are sorted and deduplicated so the written config is deterministic regardless
+/// of the caller's ordering, matching the "deduplicated, sorted" contract of
+/// [`parse_whitelist_body`].
 fn format_array(list: &[u32]) -> String {
-    let items: Vec<String> = list.iter().map(|n| n.to_string()).collect();
+    let mut sorted: Vec<u32> = list.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let items: Vec<String> = sorted.iter().map(|n| n.to_string()).collect();
     format!("[{}]", items.join(", "))
 }
 

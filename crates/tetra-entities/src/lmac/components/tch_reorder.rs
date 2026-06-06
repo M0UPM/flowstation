@@ -25,6 +25,9 @@ const CLASS2_POS: [u8; 30] = [
 ];
 
 /// Convert 274 ACELP bits from codec order (STE format) to channel order (type-1 bits). One-bit-per-byte.
+// `0 * NUM_ACELP_BITS` is written out deliberately to mirror the `1 * NUM_ACELP_BITS`
+// subframe-1 indexing on the next line, making the subframe-0/subframe-1 interleave obvious.
+#[allow(clippy::erasing_op, clippy::identity_op)]
 pub fn codec_to_channel(codec_bits: &[u8; 274]) -> [u8; 274] {
     let mut channel = [0u8; 274];
     let mut out_idx = 0;
@@ -58,6 +61,7 @@ pub fn codec_to_channel(codec_bits: &[u8; 274]) -> [u8; 274] {
 }
 
 /// Convert 274 ACELP bits from channel order (type-1/type-2 bits) to codec order (STE format). Reverse of `codec_to_channel`.
+#[allow(clippy::erasing_op, clippy::identity_op)]
 pub fn channel_to_codec(channel_bits: &[u8; 274]) -> [u8; 274] {
     let mut codec = [0u8; 274];
     let mut in_idx = 0;

@@ -7,6 +7,11 @@ use std::time::Instant;
 pub struct MsState {
     pub issi: u32,
     pub groups: Vec<u32>,
+    /// The talkgroup this MS most recently keyed up on (originated/spoke in a group call).
+    /// This is the BS's best inference of the MS's actively-selected TG, as opposed to the
+    /// other entries in `groups` which are merely scanned/affiliated. None until the MS is
+    /// heard on a group call — so right after a restart all groups show as scanned, not active.
+    pub selected_group: Option<u32>,
     pub rssi_dbfs: Option<f32>,
     pub registered_at: u64,
     pub last_seen_secs_ago: u64,
@@ -117,6 +122,9 @@ pub const LAST_HEARD_MAX: usize = 50;
 pub struct MsEntry {
     pub issi: u32,
     pub groups: Vec<u32>,
+    /// Best inference of the actively-selected TG: the last group this MS keyed up on.
+    /// See MsState::selected_group.
+    pub selected_group: Option<u32>,
     pub rssi_dbfs: Option<f32>,
     pub registered_at: Instant,
     pub last_seen: Instant,
@@ -186,6 +194,7 @@ impl DashboardStateInner {
         self.ms_map.values().map(|e| MsState {
             issi: e.issi,
             groups: e.groups.clone(),
+            selected_group: e.selected_group,
             rssi_dbfs: e.rssi_dbfs,
             registered_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

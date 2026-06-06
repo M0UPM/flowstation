@@ -326,7 +326,7 @@ pub mod typed {
             );
             return Err(PduParseErr::InconsistentLength {
                 expected: len_bits,
-                found: (buffer.get_pos() - start_pos) as usize,
+                found: (buffer.get_pos() - start_pos),
             });
         };
 
@@ -434,7 +434,7 @@ pub mod typed {
 
     fn parse_type4_header(buffer: &mut BitBuffer, expected_id: u64) -> Result<Option<(usize, usize)>, PduParseErr> {
         // Check whether the element is present
-        let id = expected_id.into();
+        let id = expected_id;
         let field_present = peek_type34_mbit_and_id(buffer, id)?;
         if !field_present {
             return Ok(None);
@@ -510,7 +510,7 @@ pub mod typed {
                     );
                     return Err(PduParseErr::InconsistentLength {
                         expected: len_bits,
-                        found: (buffer.get_pos() - start_pos) as usize,
+                        found: (buffer.get_pos() - start_pos),
                     });
                 };
 

@@ -8,3 +8,6 @@ tetra-core = { workspace = true }
 tetra-saps = { workspace = true }
 tetra-config = { workspace = true }
 tracing = { workspace = true }
+
+[lints]
+workspace = true

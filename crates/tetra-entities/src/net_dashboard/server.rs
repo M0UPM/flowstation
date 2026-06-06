@@ -519,7 +519,7 @@ impl DashboardServer {
             match &event {
                 TelemetryEvent::MsRegistration { issi } => {
                     s.ms_map.insert(*issi, MsEntry {
-                        issi: *issi, groups: Vec::new(),
+                        issi: *issi, groups: Vec::new(), selected_group: None,
                         rssi_dbfs: None, registered_at: Instant::now(), last_seen: Instant::now(),
                         energy_saving_mode: 0,
                     });
@@ -537,11 +537,26 @@ impl DashboardServer {
                 TelemetryEvent::MsGroupsSnapshot { issi, gssis } => {
                     if let Some(e) = s.ms_map.get_mut(issi) {
                         e.groups = gssis.clone();
+                        // If the previously-selected TG is no longer affiliated, drop the
+                        // pointer so the dashboard doesn't carry a stale ▶ marker into the
+                        // next render (or, worse, fail to re-render anything because the
+                        // selected GSSI is missing from the groups list).
+                        if let Some(sel) = e.selected_group
+                            && !e.groups.contains(&sel)
+                        {
+                            e.selected_group = None;
+                        }
                     }
                 }
                 TelemetryEvent::MsGroupDetach { issi, gssis } => {
                     if let Some(e) = s.ms_map.get_mut(issi) {
                         e.groups.retain(|g| !gssis.contains(g));
+                        // Same stale-pointer guard as the snapshot path above.
+                        if let Some(sel) = e.selected_group
+                            && gssis.contains(&sel)
+                        {
+                            e.selected_group = None;
+                        }
                     }
                 }
                 TelemetryEvent::MsRssi { issi, rssi_dbfs } => {
@@ -561,6 +576,10 @@ impl DashboardServer {
                         caller_issi: *caller_issi, called_issi: 0,
                         speaker_issi: Some(*caller_issi), started_at: Instant::now(), simplex: false, ts: *ts,
                     });
+                    // The caller keyed up on this GSSI, so it's their actively-selected TG (vs the
+                    // other scanned/affiliated groups). The browser derives the same thing from the
+                    // call_started message; this keeps the snapshot sent to new clients in sync.
+                    if let Some(e) = s.ms_map.get_mut(caller_issi) { e.selected_group = Some(*gssi); }
                     s.push_last_heard(*caller_issi, "call_group", *gssi);
                     s.push_log("INFO", format!("Group call {} started: {} -> GSSI {}", call_id, caller_issi, gssi));
                 }
@@ -570,6 +589,8 @@ impl DashboardServer {
                 }
                 TelemetryEvent::GroupCallSpeakerChanged { call_id, gssi, speaker_issi } => {
                     if let Some(c) = s.calls.get_mut(call_id) { c.speaker_issi = Some(*speaker_issi); }
+                    // Whoever is speaking has this GSSI selected.
+                    if let Some(e) = s.ms_map.get_mut(speaker_issi) { e.selected_group = Some(*gssi); }
                     s.push_last_heard(*speaker_issi, "call_group", *gssi);
                 }
                 TelemetryEvent::IndividualCallStarted { call_id, calling_issi, called_issi, simplex, ts } => {

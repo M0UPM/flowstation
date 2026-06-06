@@ -21,7 +21,7 @@ impl SortedDisjointSsiRanges {
     /// Also asserts that ranges are disjoint, e.g, do not overlap.
     /// Returns a SortedDisjointSsiRanges wrapper which can be used for efficient lookups. See `contains()`.
     pub fn from_vec_ssirange(mut ranges: Vec<SsiRange>) -> Self {
-        ranges.sort_by(|a, b| a.start.cmp(&b.start));
+        ranges.sort_by_key(|a| a.start);
 
         // Sanity check for overlapping ranges
         let mut lower_bound = 0;

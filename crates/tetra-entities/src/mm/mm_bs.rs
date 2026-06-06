@@ -245,44 +245,8 @@ impl MmBs {
             .map(|c| c.energy_saving_mode);
         let effective_esm_request = pdu.energy_saving_mode.or(prior_esm);
 
-        let esi = if let Some(esm) = effective_esm_request {
-            // Cap at Eg3 (~3s max delay) to avoid excessive call setup latency
-            let granted_esm = match esm {
-                EnergySavingMode::StayAlive => EnergySavingMode::StayAlive,
-                EnergySavingMode::Eg1 => EnergySavingMode::Eg1,
-                EnergySavingMode::Eg2 => EnergySavingMode::Eg2,
-                EnergySavingMode::Eg3 => EnergySavingMode::Eg3,
-                // Cap Eg4-Eg7 to Eg3
-                _ => EnergySavingMode::Eg3,
-            };
-
-            if granted_esm != esm {
-                tracing::debug!("MS {} requested {:?}, capping to {:?}", prim.received_address.ssi, esm, granted_esm);
-            }
-
-            let (frame_number, multiframe_number) = if granted_esm == EnergySavingMode::StayAlive {
-                (None, None)
-            } else {
-                // Spread MSs evenly: frame 0-17, multiframe offset within Eg cycle
-                let cycle_len = granted_esm as u8 + 1; // Eg1=2, Eg2=3, Eg3=4
-                // TETRA frames are 1-indexed (1..18); use 1..=18 to avoid frame 0
-                let frame_num = ((prim.received_address.ssi % 18) + 1) as u8;
-                let mframe_num = ((prim.received_address.ssi / 18) % cycle_len as u32) as u8;
-                tracing::info!(
-                    "MS {} granted {:?}: monitoring frame={} multiframe={}",
-                    prim.received_address.ssi, granted_esm, frame_num, mframe_num
-                );
-                (Some(frame_num), Some(mframe_num))
-            };
-
-            Some(EnergySavingInformation {
-                energy_saving_mode: granted_esm,
-                frame_number,
-                multiframe_number,
-            })
-        } else {
-            None
-        };
+        let esi = effective_esm_request
+            .map(|esm| Self::grant_energy_saving(prim.received_address.ssi, esm));
 
         // Try to register the client
         let issi = prim.received_address.ssi;
@@ -607,6 +571,51 @@ impl MmBs {
         }
     }
 
+    /// Decide which energy saving mode to grant an MS and compute its monitoring window.
+    ///
+    /// Per clause 16.7.1 NOTE 1 the BS may allocate a different mode than requested. We cap at
+    /// Eg3 (~3 s max delay) to bound call-setup latency, and for any non-StayAlive grant derive
+    /// the wake-up frame/multiframe from the ISSI so MSs are spread across monitoring slots.
+    ///
+    /// Used both by the initial location update (U-LOCATION-UPDATING-DEMAND) and by mid-session
+    /// energy saving toggles (U-MM-STATUS / ChangeOfEnergySavingModeRequest) so the two paths
+    /// behave identically.
+    fn grant_energy_saving(issi: u32, requested: EnergySavingMode) -> EnergySavingInformation {
+        let granted_esm = match requested {
+            EnergySavingMode::StayAlive => EnergySavingMode::StayAlive,
+            EnergySavingMode::Eg1 => EnergySavingMode::Eg1,
+            EnergySavingMode::Eg2 => EnergySavingMode::Eg2,
+            EnergySavingMode::Eg3 => EnergySavingMode::Eg3,
+            // Cap Eg4-Eg7 to Eg3
+            _ => EnergySavingMode::Eg3,
+        };
+
+        if granted_esm != requested {
+            tracing::debug!("MS {} requested {:?}, capping to {:?}", issi, requested, granted_esm);
+        }
+
+        let (frame_number, multiframe_number) = if granted_esm == EnergySavingMode::StayAlive {
+            (None, None)
+        } else {
+            // Spread MSs evenly: frame 0-17, multiframe offset within Eg cycle
+            let cycle_len = granted_esm as u8 + 1; // Eg1=2, Eg2=3, Eg3=4
+            // TETRA frames are 1-indexed (1..18); use 1..=18 to avoid frame 0
+            let frame_num = ((issi % 18) + 1) as u8;
+            let mframe_num = ((issi / 18) % cycle_len as u32) as u8;
+            tracing::info!(
+                "MS {} granted {:?}: monitoring frame={} multiframe={}",
+                issi, granted_esm, frame_num, mframe_num
+            );
+            (Some(frame_num), Some(mframe_num))
+        };
+
+        EnergySavingInformation {
+            energy_saving_mode: granted_esm,
+            frame_number,
+            multiframe_number,
+        }
+    }
+
     fn rx_u_mm_status(&mut self, queue: &mut MessageQueue, mut message: SapMsg) {
         tracing::trace!("rx_u_mm_status");
         let SapMsgInner::LmmMleUnitdataInd(prim) = &mut message.msg else {
@@ -644,25 +653,25 @@ impl MmBs {
                     EnergySavingMode::StayAlive
                 };
 
-                if esm != EnergySavingMode::StayAlive {
-                    tracing::info!(
-                        "MS {} requested energy saving mode change to {:?}, overriding to StayAlive",
-                        issi,
-                        esm
-                    );
-                } else {
-                    tracing::info!("MS {} energy saving mode change request: StayAlive", issi);
+                tracing::info!("MS {} requested mid-session energy saving mode change to {:?}", issi, esm);
+
+                // Grant the mode the same way the initial location update does, so toggling
+                // energy economy on/off at the radio takes effect mid-session — both for actual
+                // paging (monitoring window) and for the dashboard, which mirrors the granted
+                // mode via the MsEnergySaving telemetry emitted by set_client_energy_saving_mode.
+                // Without this the handler used to force StayAlive, so a re-activation never
+                // reached the dashboard until the terminal fully re-registered (power-cycle).
+                let esi = Self::grant_energy_saving(issi, esm);
+                // If the client was concurrently removed (T351 second-expiry race), the
+                // setters return ClientNotFound — log it so the silent no-op is at least
+                // visible in the operator log rather than vanishing.
+                if let Err(e) = self.client_mgr.set_client_energy_saving_mode(issi, esi.energy_saving_mode) {
+                    tracing::debug!("MM: mid-session ESM update on ISSI {} skipped: {:?}", issi, e);
+                }
+                if let Err(e) = self.client_mgr.set_client_monitoring_window(issi, esi.frame_number, esi.multiframe_number) {
+                    tracing::debug!("MM: mid-session monitoring window update on ISSI {} skipped: {:?}", issi, e);
                 }
 
-                // Store StayAlive (see clause 16.7.1 NOTE 1)
-                let _ = self.client_mgr.set_client_energy_saving_mode(issi, EnergySavingMode::StayAlive);
-
-                // Respond with StayAlive
-                let esi = EnergySavingInformation {
-                    energy_saving_mode: EnergySavingMode::StayAlive,
-                    frame_number: None,
-                    multiframe_number: None,
-                };
                 Self::send_d_mm_status_energy_saving(queue, issi, handle, esi);
                 handled = true;
             }

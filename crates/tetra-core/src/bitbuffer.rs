@@ -18,7 +18,7 @@ pub struct BitBuffer {
 impl BitBuffer {
     /// Create a zeroed buffer capable of holding exactly `len_bits` bits.
     pub fn new(len_bits: usize) -> Self {
-        let byte_len = (len_bits + 7) / 8;
+        let byte_len = len_bits.div_ceil(8);
         BitBuffer {
             buffer: vec![0; byte_len],
             start: 0,
@@ -31,7 +31,7 @@ impl BitBuffer {
     /// Create a zeroed buffer with an inital capacity but zero length (end is set to 0).
     /// Writes to this buffer will automatically advance the end pointer and reallocate the buffer if needed
     pub fn new_autoexpand(initial_max_len_bits: usize) -> Self {
-        let byte_len = (initial_max_len_bits + 7) / 8;
+        let byte_len = initial_max_len_bits.div_ceil(8);
         BitBuffer {
             buffer: vec![0; byte_len],
             start: 0,
@@ -105,7 +105,7 @@ impl BitBuffer {
     pub fn from_bitbuffer(bitbuffer: &BitBuffer) -> Self {
         // Compute how many bits to copy when we want to perform byte-wise copy.
         let start_byte = bitbuffer.start / 8;
-        let end_byte = (bitbuffer.end + 7) / 8;
+        let end_byte = bitbuffer.end.div_ceil(8);
         let alloc_bits = (end_byte - start_byte) * 8;
 
         // Allocate new BitBuffer, copy data, and set offsets
@@ -122,7 +122,7 @@ impl BitBuffer {
     pub fn from_bitbuffer_pos(bitbuffer: &BitBuffer) -> Self {
         // Compute how many bits to copy when we want to perform byte-wise copy.
         let start_byte = bitbuffer.pos / 8;
-        let end_byte = (bitbuffer.end + 7) / 8;
+        let end_byte = bitbuffer.end.div_ceil(8);
         let alloc_bits = (end_byte - start_byte) * 8;
 
         // Allocate new BitBuffer, copy data, and set offsets
@@ -210,7 +210,7 @@ impl BitBuffer {
 
     /// Read `num_bits` at the current pos, advancing pos, and write them into the provided output slice as bytes
     pub fn read_bits_into_slice(&mut self, num_bits: usize, buf: &mut [u8]) -> Option<()> {
-        let num_bytes = (num_bits + 7) / 8;
+        let num_bytes = num_bits.div_ceil(8);
         assert!(buf.len() >= num_bytes, "output buffer too small for num_bits");
 
         let mut bits_remaining = num_bits;
@@ -224,7 +224,7 @@ impl BitBuffer {
     }
 
     fn _realloc_tail(&mut self, new_cap_bits: usize) {
-        let new_cap_bytes = (new_cap_bits + 7) / 8;
+        let new_cap_bytes = new_cap_bits.div_ceil(8);
         assert!(
             new_cap_bytes >= self.buffer.len(),
             "new capacity must be larger than current buffer size"
@@ -289,7 +289,7 @@ impl BitBuffer {
 
             // Convert bytes from data array to u64 and xor with read val
             let mut xor_data = 0u64;
-            let db_chunk_bytes = (chunk_bits + 7) / 8;
+            let db_chunk_bytes = chunk_bits.div_ceil(8);
             for _ in 0..db_chunk_bytes {
                 xor_data <<= 8;
                 xor_data |= data[data_pos] as u64;
@@ -301,7 +301,7 @@ impl BitBuffer {
             // println!("xor_bytearr: chunk_bits {}, val {:X}, xor_data {:X}, xorred_data {:X}", chunk_bits, val, xor_data, xorred_data);
 
             // Seek back to where we were before reading
-            self.seek_rel(-1 * chunk_bits as isize);
+            self.seek_rel(-(chunk_bits as isize));
             self.write_bits(xorred_data, chunk_bits);
         }
         Some(())
@@ -553,7 +553,7 @@ impl BitBuffer {
     /// --- Dumps only the [start..end) window in hex ---
     pub fn dump_hex(&self) -> String {
         let len = self.end - self.start;
-        let n_nibbles = (len + 3) / 4;
+        let n_nibbles = len.div_ceil(4);
         let mut s = String::with_capacity(n_nibbles);
         for i in 0..n_nibbles {
             let bit_pos = self.start + i * 4;
